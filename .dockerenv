@@ -1,0 +1,8 @@
+# Docker build configuration for optimization
+
+# General settings
+DOCKER_BUILDKIT=1
+COMPOSE_DOCKER_CLI_BUILD=1
+
+# Build arguments (optional, can be passed via CLI)
+# BUILDKIT_INLINE_CACHE=1

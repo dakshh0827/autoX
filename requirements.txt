@@ -1,0 +1,16 @@
+# Web framework
+fastapi==0.115.5
+uvicorn[standard]==0.32.1
+
+# Playwright for browser automation
+playwright==1.49.0
+
+# Groq SDK
+groq==0.13.0
+
+# Pydantic & settings
+pydantic==2.10.3
+pydantic-settings==2.7.0
+
+# Utilities
+python-dotenv==1.0.1

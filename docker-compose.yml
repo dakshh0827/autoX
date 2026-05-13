@@ -1,0 +1,38 @@
+version: '3.8'
+
+services:
+  twitter-agent:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: twitter_ai_agent
+    ports:
+      - "8000:8000"
+    environment:
+      # Required environment variables
+      GROQ_API_KEY: ${GROQ_API_KEY}
+      
+      # Optional configurations (override defaults if needed)
+      HOST: 0.0.0.0
+      PORT: 8000
+      DEBUG: ${DEBUG:-False}
+      BROWSER_HEADLESS: ${BROWSER_HEADLESS:-True}
+      GROQ_MODEL: ${GROQ_MODEL:-llama-3.3-70b-versatile}
+      THREAD_MIN_TWEETS: ${THREAD_MIN_TWEETS:-5}
+      THREAD_MAX_TWEETS: ${THREAD_MAX_TWEETS:-8}
+      INTERACTIONS_TARGET: ${INTERACTIONS_TARGET:-10}
+      FOLLOWS_TARGET: ${FOLLOWS_TARGET:-5}
+    
+    volumes:
+      # Mount logs directory for persistence
+      - ./logs:/app/logs
+    
+    restart: unless-stopped
+    
+    # Health check
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
