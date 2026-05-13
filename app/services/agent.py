@@ -11,7 +11,9 @@ Orchestrates the full Twitter automation workflow:
 
 import time
 from app.services.groq_service import GroqService
-from app.services.twitter_browser import TwitterBrowser
+# TwitterBrowser imports Playwright; import lazily inside `run()` to avoid
+# blocking application startup during module import in environments where
+# Playwright setup is slow or unavailable.
 from app.models.schemas import AgentRequest, AgentResponse, ThreadResult, InteractionResult, FollowResult
 from app.core.logger import get_logger
 
@@ -26,6 +28,9 @@ class TwitterAgent:
         topic = request.topic.strip()
         logger.info(f"🚀 Agent starting — topic: '{topic}'")
         start_time = time.time()
+
+        # Lazy import to avoid importing Playwright at app import time
+        from app.services.twitter_browser import TwitterBrowser
 
         browser = TwitterBrowser()
         try:
