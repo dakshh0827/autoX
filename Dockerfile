@@ -1,5 +1,5 @@
 # Multi-stage build for optimal image size
-FROM python:3.11-slim as base
+FROM python:3.11-slim AS base
 
 # Set environment variables
 ENV PYTHONUNBUFFERED=1 \
@@ -48,9 +48,9 @@ COPY requirements.txt .
 
 # Install Python dependencies
 RUN pip install --upgrade pip setuptools wheel && \
-    pip install -r requirements.txt
+    pip install --default-timeout=1000 --retries 5 -r requirements.txt
 
-# Install Playwright browsers (skip deps since we've already installed them above)
+# Install Playwright browser at build time using the system packages above
 RUN playwright install chromium
 
 # Copy application code
@@ -68,5 +68,5 @@ ENV HOST=0.0.0.0 \
     DEBUG=False \
     BROWSER_HEADLESS=True
 
-# Run the application
+# Use simple uvicorn command for startup
 CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]

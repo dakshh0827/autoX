@@ -10,6 +10,11 @@ logger = get_logger(__name__)
 
 class GroqService:
     def __init__(self):
+        if not settings.GROQ_API_KEY:
+            raise RuntimeError(
+                "GROQ_API_KEY is not configured. Set it in the environment before calling /run."
+            )
+
         self.client = Groq(api_key=settings.GROQ_API_KEY)
         self.model = settings.GROQ_MODEL
 
