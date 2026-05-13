@@ -20,6 +20,22 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libpango-1.0-0 \
     libpangoft2-1.0-0 \
     fonts-dejavu-core \
+    fonts-liberation \
+    fonts-unifont \
+    libnss3 \
+    libnspr4 \
+    libatk1.0-0 \
+    libatk-bridge2.0-0 \
+    libcups2 \
+    libdrm2 \
+    libxcomposite1 \
+    libxdamage1 \
+    libxfixes3 \
+    libxrandr2 \
+    libgbm1 \
+    libcairo2 \
+    libasound2 \
+    libatspi2.0-0 \
     wget \
     ca-certificates \
     && rm -rf /var/lib/apt/lists/*
@@ -34,9 +50,8 @@ COPY requirements.txt .
 RUN pip install --upgrade pip setuptools wheel && \
     pip install -r requirements.txt
 
-# Install Playwright browsers
-RUN playwright install chromium && \
-    playwright install-deps chromium
+# Install Playwright browsers (skip deps since we've already installed them above)
+RUN playwright install chromium
 
 # Copy application code
 COPY . .
