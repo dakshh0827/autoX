@@ -62,11 +62,11 @@ EXPOSE 8000
 # Health check disabled temporarily to avoid startup hangs in this environment
 HEALTHCHECK NONE
 
-# Set environment defaults for deployment
-ENV HOST=0.0.0.0 \
-    PORT=8000 \
-    DEBUG=False \
+# Set environment defaults for deployment (do NOT override PORT so platforms
+# like Hugging Face Spaces can inject their required port, e.g. 7860)
+ENV HOST=0.0.0.0 \\
+    DEBUG=False \\
     BROWSER_HEADLESS=True
 
 # Use simple uvicorn command for startup
-CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["sh", "-c", "uvicorn main:app --host ${HOST:-0.0.0.0} --port ${PORT:-8000}"]
