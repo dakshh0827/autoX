@@ -4,6 +4,7 @@ import asyncio
 import base64
 import json
 import os
+import re
 import tempfile
 from dataclasses import dataclass
 from typing import Optional
@@ -61,26 +62,17 @@ class AuthService:
             page = await context.new_page()
 
             logger.info("Navigating to X login page...")
-            await page.goto(
-                f"{settings.TWITTER_BASE_URL}/i/flow/login",
-                wait_until="domcontentloaded",
-                timeout=30_000,
-            )
+            await self._open_login_flow(page)
 
-            # Give the JS-heavy login page time to fully render
-            await page.wait_for_timeout(3000)
-
-            # Wait for ANY input to appear (Twitter renders inputs via React)
             logger.info("Waiting for login form inputs to appear...")
-            try:
-                await page.wait_for_selector("input", timeout=15_000)
-            except PWTimeout:
+            input_ready = await self._wait_for_login_inputs(page)
+            if not input_ready:
                 return AuthResult(
                     success=False,
                     message=f"Login page did not render any inputs. URL: {page.url}",
                 )
 
-            await page.wait_for_timeout(1000)
+            await page.wait_for_timeout(500)
 
             # --- Step 1: Fill username ---
             logger.info("Filling username...")
@@ -200,6 +192,59 @@ class AuthService:
                 pass
         return None
 
+    async def _open_login_flow(self, page) -> None:
+        """Open the most reliable X login flow and click through any landing layer."""
+        candidates = [
+            "https://mobile.twitter.com/i/flow/login",
+            "https://mobile.twitter.com/login",
+            f"{settings.TWITTER_BASE_URL}/i/flow/login",
+            "https://twitter.com/i/flow/login",
+            f"{settings.TWITTER_BASE_URL}/login",
+            "https://twitter.com/login",
+        ]
+
+        for url in candidates:
+            try:
+                logger.info(f"Opening login URL: {url}")
+                await page.goto(url, wait_until="domcontentloaded", timeout=30_000)
+                await page.wait_for_load_state("networkidle")
+                await page.wait_for_timeout(1200)
+
+                # If X is showing a landing page or cookie dialog, click through it.
+                await self._dismiss_overlays(page)
+                await self._click_any_text(page, ["Sign in", "Log in", "Accept all cookies", "Accept"])
+                await page.wait_for_timeout(1200)
+
+                return
+            except Exception as exc:
+                logger.warning(f"Login URL failed ({url}): {exc}")
+
+        raise RuntimeError("Could not open a usable X login page.")
+
+    async def _wait_for_login_inputs(self, page) -> bool:
+        """Wait for username/email and password inputs to appear, with retries."""
+        for _ in range(4):
+            inputs = page.locator(
+                'input, textarea, [contenteditable="true"]'
+            )
+            try:
+                count = await inputs.count()
+                visible_count = 0
+                for i in range(count):
+                    element = inputs.nth(i)
+                    if await element.is_visible():
+                        visible_count += 1
+                if visible_count:
+                    return True
+            except Exception:
+                pass
+
+            await self._dismiss_overlays(page)
+            await self._click_any_text(page, ["Sign in", "Log in", "Next"])
+            await page.wait_for_timeout(1500)
+
+        return False
+
     async def _smart_fill(self, page, value: str, field_hint: str = "") -> bool:
         """Fill the first visible text input on the page."""
         # Ordered list of selectors to try
@@ -232,6 +277,37 @@ class AuthService:
             return True
 
         return False
+
+    async def _click_any_text(self, page, labels) -> bool:
+        for label in labels:
+            try:
+                buttons = [
+                    page.get_by_role("button", name=re.compile(re.escape(label), re.I)),
+                    page.get_by_text(label, exact=False),
+                    page.locator(f'button:has-text("{label}")'),
+                    page.locator(f'[role="button"]:has-text("{label}")'),
+                ]
+                for locator in buttons:
+                    try:
+                        if await locator.count():
+                            await locator.first.click()
+                            return True
+                    except Exception:
+                        continue
+            except Exception:
+                continue
+        return False
+
+    async def _dismiss_overlays(self, page) -> None:
+        """Best-effort dismissal of cookie/landing overlays that block inputs."""
+        overlay_labels = [
+            "Accept all cookies",
+            "Accept cookies",
+            "Accept",
+            "Close",
+            "Not now",
+        ]
+        await self._click_any_text(page, overlay_labels)
 
     async def _click_next(self, page):
         """Click the Next button using multiple strategies."""
