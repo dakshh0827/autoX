@@ -6,7 +6,9 @@ from pydantic_settings import BaseSettings
 class Settings(BaseSettings):
     # Server
     HOST: str = "0.0.0.0"
-    PORT: int = 8000
+    # Default to the common Hugging Face Spaces port so the container
+    # listens correctly when the platform does not inject `PORT`.
+    PORT: int = 7860
     DEBUG: bool = False
 
     # Groq

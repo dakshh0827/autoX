@@ -56,8 +56,8 @@ RUN playwright install chromium
 # Copy application code
 COPY . .
 
-# Expose port (7860 for Hugging Face Spaces, 8000 for standard deployment)
-EXPOSE 8000
+# Expose the Spaces-friendly port by default
+EXPOSE 7860
 
 # Health check disabled temporarily to avoid startup hangs in this environment
 HEALTHCHECK NONE
@@ -69,4 +69,4 @@ ENV DEBUG=False
 ENV BROWSER_HEADLESS=True
 
 # Use simple uvicorn command for startup
-CMD ["sh", "-c", "uvicorn main:app --host ${HOST:-0.0.0.0} --port ${PORT:-8000}"]
+CMD ["sh", "-c", "uvicorn main:app --host ${HOST:-0.0.0.0} --port ${PORT:-7860}"]
