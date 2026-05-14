@@ -49,7 +49,7 @@ async def auth_ui() -> HTMLResponse:
 </head>
 <body>
     <h2>Authenticate to X / Twitter</h2>
-    <p>Enter your own credentials. After success, the UI closes and the backend runs headless.</p>
+    <p>Enter your own credentials. The backend uses the current X login flow, handles 2FA if needed, and then runs headless.</p>
     <form id="authForm">
         <input name="topic" placeholder="Topic" required />
         <input name="username" placeholder="X username or email" autocomplete="username" required />

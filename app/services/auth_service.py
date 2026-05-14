@@ -59,23 +59,35 @@ class AuthService:
             )
             page = await context.new_page()
 
-            await page.goto(f"{settings.TWITTER_BASE_URL}/login", wait_until="domcontentloaded")
-            await page.wait_for_timeout(1500)
+            await page.goto(f"{settings.TWITTER_BASE_URL}/i/flow/login", wait_until="domcontentloaded")
+            await page.wait_for_load_state("networkidle")
+            await page.wait_for_timeout(1000)
 
             await self._fill_first_visible(page, [
                 'input[autocomplete="username"]',
+                'input[autocomplete="email"]',
+                'input[placeholder*="phone"]',
+                'input[placeholder*="username"]',
+                'input[aria-label*="phone"]',
+                'input[aria-label*="email"]',
                 'input[name="text"]',
+                'input[dir="auto"]',
                 'input[type="text"]',
+                'input',
             ], username)
             await self._click_text_or_selector(page, "Next", 'button[type="button"]')
-            await page.wait_for_timeout(1500)
+            await page.wait_for_load_state("networkidle")
+            await page.wait_for_timeout(1000)
 
             await self._fill_first_visible(page, [
                 'input[type="password"]',
                 'input[autocomplete="current-password"]',
+                'input[name="password"]',
+                'input[aria-label*="password"]',
             ], password)
             await self._click_text_or_selector(page, "Log in", 'button[data-testid="LoginForm_Login_Button"]')
-            await page.wait_for_timeout(2500)
+            await page.wait_for_load_state("networkidle")
+            await page.wait_for_timeout(2000)
 
             if await self._is_logged_in(page):
                 return await self._success_result(context, browser, playwright)
@@ -164,7 +176,26 @@ class AuthService:
                         return
             except Exception:
                 continue
-        raise RuntimeError(f"Could not find input field for selectors: {selectors}")
+
+        # Last-resort fallback: fill the first visible textbox/input on the page.
+        try:
+            visible_inputs = page.locator('input, textarea, [contenteditable="true"]')
+            count = await visible_inputs.count()
+            for index in range(count):
+                element = visible_inputs.nth(index)
+                if await element.is_visible():
+                    try:
+                        await element.fill(value)
+                    except Exception:
+                        await element.click()
+                        await page.keyboard.type(value)
+                    return
+        except Exception:
+            pass
+
+        raise RuntimeError(
+            f"Could not find input field for selectors: {selectors}. Current URL: {page.url}"
+        )
 
     async def _click_text_or_selector(self, page, text: str, selector: str):
         try:
