@@ -64,9 +64,9 @@ HEALTHCHECK NONE
 
 # Set environment defaults for deployment (do NOT override PORT so platforms
 # like Hugging Face Spaces can inject their required port, e.g. 7860)
-ENV HOST=0.0.0.0 \\
-    DEBUG=False \\
-    BROWSER_HEADLESS=True
+ENV HOST=0.0.0.0
+ENV DEBUG=False
+ENV BROWSER_HEADLESS=True
 
 # Use simple uvicorn command for startup
 CMD ["sh", "-c", "uvicorn main:app --host ${HOST:-0.0.0.0} --port ${PORT:-8000}"]
