@@ -16,6 +16,7 @@ from app.services.groq_service import GroqService
 # Playwright setup is slow or unavailable.
 from app.models.schemas import AgentRequest, AgentResponse, ThreadResult, InteractionResult, FollowResult
 from app.core.logger import get_logger
+from app.services.auth_service import AuthService
 
 logger = get_logger(__name__)
 
@@ -34,6 +35,21 @@ class TwitterAgent:
 
         browser = TwitterBrowser()
         try:
+            storage_state_b64 = request.auth_storage_state_b64
+            if not storage_state_b64 and request.username and request.password:
+                logger.info("No storage state supplied; authenticating user from credentials")
+                auth_result = await AuthService().authenticate(
+                    username=request.username,
+                    password=request.password,
+                    two_factor_code=request.two_factor_code,
+                    backup_code=request.backup_code,
+                )
+                if auth_result.requires_2fa:
+                    raise RuntimeError(auth_result.message)
+                if not auth_result.success or not auth_result.storage_state_b64:
+                    raise RuntimeError(auth_result.message or "Authentication failed.")
+                storage_state_b64 = auth_result.storage_state_b64
+
             # ── Step 1: Generate content with Groq ────────────────────────────
             logger.info("Step 1/4 — Generating content with Groq")
             tweets = self.groq.generate_thread(topic)
@@ -45,7 +61,7 @@ class TwitterAgent:
 
             # ── Step 2: Launch browser & authenticate ─────────────────────────
             logger.info("Step 2/4 — Launching browser for user authentication")
-            await browser.start(storage_state_b64=request.auth_storage_state_b64)
+            await browser.start(storage_state_b64=storage_state_b64)
             await browser.navigate_to_login()
 
             # ── Step 3: Post the thread ───────────────────────────────────────

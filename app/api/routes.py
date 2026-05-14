@@ -67,7 +67,7 @@ async def auth_ui() -> HTMLResponse:
             event.preventDefault();
             statusEl.textContent = 'Working...';
             const payload = Object.fromEntries(new FormData(form).entries());
-            const response = await fetch('/api/v1/auth-run', {
+            const response = await fetch('/api/v1/run', {
                 method: 'POST',
                 headers: {'Content-Type': 'application/json'},
                 body: JSON.stringify(payload),
@@ -108,12 +108,12 @@ async def auth_ui() -> HTMLResponse:
 async def run_agent(request: AgentRequest) -> AgentResponse:
     logger.info(f"POST /run — topic='{request.topic}'")
     try:
-        if not request.auth_storage_state_b64:
+        if not request.auth_storage_state_b64 and not (request.username and request.password):
             raise HTTPException(
                 status_code=400,
                 detail=(
-                    "This endpoint now requires user auth data. Open /api/v1/auth "
-                    "or send auth_storage_state_b64 in the request."
+                    "Open /api/v1/auth or send username/password, or send "
+                    "auth_storage_state_b64 in the request."
                 ),
             )
         agent = TwitterAgent()

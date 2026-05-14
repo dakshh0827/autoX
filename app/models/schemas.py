@@ -17,6 +17,10 @@ class AgentRequest(BaseModel):
             "authenticated X/Twitter session. Pass this for headless runs in Spaces."
         ),
     )
+    username: Optional[str] = Field(default=None, max_length=200)
+    password: Optional[str] = Field(default=None, max_length=200)
+    two_factor_code: Optional[str] = Field(default=None, max_length=50)
+    backup_code: Optional[str] = Field(default=None, max_length=50)
 
 
 class AuthRunRequest(BaseModel):

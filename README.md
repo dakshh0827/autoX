@@ -17,16 +17,17 @@ in the background.
 
 ### UI flow
 
-1. Open `/auth`.
+1. Open `/api/v1/auth`.
 2. Enter topic, username/email, and password.
 3. If X asks for 2FA, enter the verification or backup code.
 4. After login succeeds, the UI closes and the backend job keeps running.
 
 ### API flow
 
-If you want to call the API directly, send a request to `/auth-run` with the
-same fields. The backend will authenticate, save a temporary session, and start
-the job in headless mode.
+If you want to call the API directly, send a request to `/api/v1/run` with
+`topic`, `username`, `password`, and optionally `two_factor_code` or
+`backup_code`. The backend will authenticate, save a temporary session, and
+start the job in headless mode.
 
 ### Create a session locally
 
