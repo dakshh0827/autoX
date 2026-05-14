@@ -171,72 +171,73 @@ async def auth_ui() -> HTMLResponse:
 async def run_agent(request: AgentRequest) -> AgentResponse:
     logger.info(f"POST /run — topic='{request.topic}'")
     try:
-    # If no Playwright storage_state was provided, allow users to send
-    # DevTools-extracted data (cookies/localStorage). Convert it to a
-    # Playwright storage_state in-flight.
-    if not request.auth_storage_state_b64:
-      # require at least some devtools data
-      if not (request.cookies or request.local_storage or request.session_storage):
-        raise HTTPException(
-          status_code=400,
-          detail="Provide auth_storage_state_b64 or DevTools fields (cookies/local_storage).",
-        )
+        # If no Playwright storage_state was provided, allow users to send
+        # DevTools-extracted data (cookies/localStorage). Convert it to a
+        # Playwright storage_state in-flight.
+        if not request.auth_storage_state_b64:
+            # require at least some devtools data
+            if not (request.cookies or request.local_storage or request.session_storage):
+                raise HTTPException(
+                    status_code=400,
+                    detail="Provide auth_storage_state_b64 or DevTools fields (cookies/local_storage).",
+                )
 
-      # Convert DevTools data into Playwright storage_state JSON
-      try:
-        cookies_list = []
-        if request.cookies:
-          parts = [c.strip() for c in request.cookies.split(';') if c.strip()]
-          for p in parts:
-            if '=' not in p:
-              continue
-            name, value = p.split('=', 1)
-            cookies_list.append(
-              {
-                'name': name,
-                'value': value,
-                'domain': request.origin.replace('https://', '').replace('http://', ''),
-                'path': '/',
-                'expires': None,
-                'httpOnly': False,
-                'secure': request.origin.startswith('https'),
-                'sameSite': 'Lax',
-              }
-            )
-
-        def _parse_storage(s):
-          if not s:
-            return []
-          if isinstance(s, str):
+            # Convert DevTools data into Playwright storage_state JSON
             try:
-              obj = json.loads(s)
-            except Exception:
-              return []
-          else:
-            obj = s
-          items = []
-          if isinstance(obj, dict):
-            for k, v in obj.items():
-              items.append({'name': k, 'value': str(v)})
-          return items
+                cookies_list = []
+                if request.cookies:
+                    parts = [c.strip() for c in request.cookies.split(';') if c.strip()]
+                    for p in parts:
+                        if '=' not in p:
+                            continue
+                        name, value = p.split('=', 1)
+                        cookies_list.append(
+                            {
+                                'name': name,
+                                'value': value,
+                                'domain': request.origin.replace('https://', '').replace('http://', ''),
+                                'path': '/',
+                                'expires': None,
+                                'httpOnly': False,
+                                'secure': request.origin.startswith('https'),
+                                'sameSite': 'Lax',
+                            }
+                        )
 
-        origin_local = _parse_storage(request.local_storage)
-        origin_session = _parse_storage(request.session_storage)
+                def _parse_storage(s):
+                    if not s:
+                        return []
+                    if isinstance(s, str):
+                        try:
+                            obj = json.loads(s)
+                        except Exception:
+                            return []
+                    else:
+                        obj = s
+                    items = []
+                    if isinstance(obj, dict):
+                        for k, v in obj.items():
+                            items.append({'name': k, 'value': str(v)})
+                    return items
 
-        storage_state = {'cookies': cookies_list, 'origins': []}
-        if origin_local or origin_session:
-          storage_state['origins'].append({'origin': request.origin, 'localStorage': origin_local})
+                origin_local = _parse_storage(request.local_storage)
+                origin_session = _parse_storage(request.session_storage)
 
-        raw = json.dumps(storage_state, ensure_ascii=False)
-        b64 = base64.b64encode(raw.encode()).decode()
+                storage_state = {'cookies': cookies_list, 'origins': []}
+                if origin_local or origin_session:
+                    storage_state['origins'].append({'origin': request.origin, 'localStorage': origin_local})
 
-        # Build a new AgentRequest with the generated storage_state
-        req_dict = request.model_dump()
-        req_dict['auth_storage_state_b64'] = b64
-        request = AgentRequest(**req_dict)
-      except Exception as e:
-        logger.error(f"Error converting DevTools data: {e}", exc_info=True)
-        raise HTTPException(status_code=400, detail="Invalid DevTools data format")
+                raw = json.dumps(storage_state, ensure_ascii=False)
+                b64 = base64.b64encode(raw.encode()).decode()
+
+                # Build a new AgentRequest with the generated storage_state
+                req_dict = request.model_dump()
+                req_dict['auth_storage_state_b64'] = b64
+                request = AgentRequest(**req_dict)
+            except Exception as e:
+                logger.error(f"Error converting DevTools data: {e}", exc_info=True)
+                raise HTTPException(status_code=400, detail="Invalid DevTools data format")
+
         agent = TwitterAgent()
         result = await agent.run(request)
         if not result.success:
@@ -249,80 +250,80 @@ async def run_agent(request: AgentRequest) -> AgentResponse:
         raise HTTPException(status_code=500, detail=str(e))
 
 
-  @router.post(
+@router.post(
     "/devtools-to-storage",
     summary="Convert browser DevTools export to Playwright storage_state (base64)",
-  )
-  async def devtools_to_storage(
+)
+async def devtools_to_storage(
     cookies: Optional[str] = Body(None, description="Value of document.cookie (e.g. 'a=1; b=2')"),
     local_storage: Optional[str] = Body(None, description="JSON string or object of localStorage contents"),
     session_storage: Optional[str] = Body(None, description="JSON string or object of sessionStorage contents"),
     origin: Optional[str] = Body("https://x.com", description="Origin to attach localStorage to (default https://x.com)"),
-  ) -> dict:
+) -> dict:
     """Convert devtools-extracted `document.cookie` + local/session storage into a Playwright storage_state JSON and return it base64-encoded.
 
     NOTE: HttpOnly cookies are not available via `document.cookie` and will be missing. This converter helps non-technical users create a usable partial storage_state.
     """
     try:
-      cookies_list = []
-      if cookies:
-        # parse document.cookie style string
-        parts = [c.strip() for c in cookies.split(';') if c.strip()]
-        for p in parts:
-          if '=' not in p:
-            continue
-          name, value = p.split('=', 1)
-          cookies_list.append(
-            {
-              'name': name,
-              'value': value,
-              'domain': origin.replace('https://', '').replace('http://', ''),
-              'path': '/',
-              'expires': None,
-              'httpOnly': False,
-              'secure': origin.startswith('https'),
-              'sameSite': 'Lax',
-            }
-          )
+        cookies_list = []
+        if cookies:
+            # parse document.cookie style string
+            parts = [c.strip() for c in cookies.split(';') if c.strip()]
+            for p in parts:
+                if '=' not in p:
+                    continue
+                name, value = p.split('=', 1)
+                cookies_list.append(
+                    {
+                        'name': name,
+                        'value': value,
+                        'domain': origin.replace('https://', '').replace('http://', ''),
+                        'path': '/',
+                        'expires': None,
+                        'httpOnly': False,
+                        'secure': origin.startswith('https'),
+                        'sameSite': 'Lax',
+                    }
+                )
 
-      def parse_storage(s):
-        if not s:
-          return []
-        if isinstance(s, str):
-          try:
-            obj = json.loads(s)
-          except Exception:
-            # try to parse as JS object copied from console (fallback)
-            return []
-        else:
-          obj = s
-        items = []
-        if isinstance(obj, dict):
-          for k, v in obj.items():
-            items.append({'name': k, 'value': str(v)})
-        return items
+        def parse_storage(s):
+            if not s:
+                return []
+            if isinstance(s, str):
+                try:
+                    obj = json.loads(s)
+                except Exception:
+                    # try to parse as JS object copied from console (fallback)
+                    return []
+            else:
+                obj = s
+            items = []
+            if isinstance(obj, dict):
+                for k, v in obj.items():
+                    items.append({'name': k, 'value': str(v)})
+            return items
 
-      origin_local = parse_storage(local_storage)
-      origin_session = parse_storage(session_storage)
+        origin_local = parse_storage(local_storage)
+        origin_session = parse_storage(session_storage)
 
-      storage_state = {
-        'cookies': cookies_list,
-        'origins': []
-      }
-      if origin_local or origin_session:
-        origin_entry = {'origin': origin, 'localStorage': origin_local}
-        # Playwright storage_state does not have a sessionStorage field; sessionStorage will be ignored by Playwright.
-        storage_state['origins'].append(origin_entry)
+        storage_state = {
+            'cookies': cookies_list,
+            'origins': []
+        }
+        if origin_local or origin_session:
+            origin_entry = {'origin': origin, 'localStorage': origin_local}
+            # Playwright storage_state does not have a sessionStorage field; sessionStorage will be ignored by Playwright.
+            storage_state['origins'].append(origin_entry)
 
-      # return base64-encoded JSON
-      raw = json.dumps(storage_state, ensure_ascii=False)
-      b64 = base64.b64encode(raw.encode()).decode()
+        # return base64-encoded JSON
+        raw = json.dumps(storage_state, ensure_ascii=False)
+        b64 = base64.b64encode(raw.encode()).decode()
 
-      warning = None
-      if cookies and not any(c.get('httpOnly', False) for c in cookies_list):
-        warning = 'HttpOnly cookies are not captured from the browser console; some sites may require full storage_state from Playwright.'
+        warning = None
+        if cookies and not any(c.get('httpOnly', False) for c in cookies_list):
+            warning = 'HttpOnly cookies are not captured from the browser console; some sites may require full storage_state from Playwright.'
 
-      return {'storage_state_b64': b64, 'warning': warning}
+        return {'storage_state_b64': b64, 'warning': warning}
     except Exception as e:
-      logger.error(f"Error converting devtools data: {e}", exc_info=True)
-      raise HTTPException(status_code=400, detail=str(e))
+        logger.error(f"Error converting devtools data: {e}", exc_info=True)
+        raise HTTPException(status_code=400, detail=str(e))
