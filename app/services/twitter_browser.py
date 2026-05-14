@@ -84,7 +84,10 @@ class TwitterBrowser:
 
     # ── Lifecycle ─────────────────────────────────────────────────────────────
 
-    async def start(self):
+    async def start(self, storage_state_b64: Optional[str] = None):
+        import json
+        import base64
+
         self._playwright = await async_playwright().start()
         self._browser = await self._playwright.chromium.launch(
             headless=settings.BROWSER_HEADLESS,
@@ -95,6 +98,27 @@ class TwitterBrowser:
                 "--disable-setuid-sandbox",
             ],
         )
+
+        # Load persistent auth (storage_state) if provided via file or base64 env
+        storage_state_arg = None
+        if settings.STORAGE_STATE_FILE:
+            storage_state_arg = settings.STORAGE_STATE_FILE
+            logger.info(f"Using Playwright storage_state file: {settings.STORAGE_STATE_FILE}")
+        elif storage_state_b64:
+            try:
+                decoded = base64.b64decode(storage_state_b64)
+                storage_state_arg = json.loads(decoded.decode("utf-8"))
+                logger.info("Using Playwright storage_state from request payload")
+            except Exception as e:
+                logger.warning(f"Could not decode request storage_state_b64: {e}")
+        elif settings.STORAGE_STATE_B64:
+            try:
+                decoded = base64.b64decode(settings.STORAGE_STATE_B64)
+                storage_state_arg = json.loads(decoded.decode("utf-8"))
+                logger.info("Using Playwright storage_state from STORAGE_STATE_B64 env")
+            except Exception as e:
+                logger.warning(f"Could not decode STORAGE_STATE_B64: {e}")
+
         self._context = await self._browser.new_context(
             viewport={"width": 1280, "height": 900},
             user_agent=(
@@ -104,6 +128,7 @@ class TwitterBrowser:
             ),
             locale="en-US",
             timezone_id="America/New_York",
+            **({"storage_state": storage_state_arg} if storage_state_arg is not None else {}),
         )
         # Mask webdriver flag
         await self._context.add_init_script(
@@ -119,6 +144,18 @@ class TwitterBrowser:
             await self._playwright.stop()
         logger.info("Browser closed")
 
+    async def save_storage_state(self, path: str):
+        """Save the current browser context storage state to `path`.
+
+        Use this locally after completing an interactive login (headful mode)
+        to export `storage_state.json` which can then be uploaded to Spaces
+        (or encoded as a secret) and re-used in headless deployments.
+        """
+        if not self._context:
+            raise RuntimeError("Browser context is not initialized")
+        await self._context.storage_state(path=path)
+        logger.info(f"Saved Playwright storage_state to {path}")
+
     # ── Navigation helpers ────────────────────────────────────────────────────
 
     async def goto(self, url: str, wait_until: str = "domcontentloaded"):
@@ -132,6 +169,15 @@ class TwitterBrowser:
 
     async def navigate_to_login(self):
         """Open Twitter login page and wait for the user to authenticate."""
+        if settings.BROWSER_HEADLESS and not (
+            settings.STORAGE_STATE_FILE or settings.STORAGE_STATE_B64
+        ):
+            raise RuntimeError(
+                "Headless mode requires authenticated user session data. "
+                "Pass auth_storage_state_b64 in the /run request, or set "
+                "STORAGE_STATE_B64/STORAGE_STATE_FILE for the Space."
+            )
+
         logger.info("Opening Twitter login page — waiting for user authentication")
         await self.goto(f"{settings.TWITTER_BASE_URL}/login")
 

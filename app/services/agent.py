@@ -45,7 +45,7 @@ class TwitterAgent:
 
             # ── Step 2: Launch browser & authenticate ─────────────────────────
             logger.info("Step 2/4 — Launching browser for user authentication")
-            await browser.start()
+            await browser.start(storage_state_b64=request.auth_storage_state_b64)
             await browser.navigate_to_login()
 
             # ── Step 3: Post the thread ───────────────────────────────────────
