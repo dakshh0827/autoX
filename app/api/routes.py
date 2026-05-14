@@ -191,18 +191,16 @@ async def run_agent(request: AgentRequest) -> AgentResponse:
                         if '=' not in p:
                             continue
                         name, value = p.split('=', 1)
-                        cookies_list.append(
-                            {
-                                'name': name,
-                                'value': value,
-                                'domain': request.origin.replace('https://', '').replace('http://', ''),
-                                'path': '/',
-                                'expires': None,
-                                'httpOnly': False,
-                                'secure': request.origin.startswith('https'),
-                                'sameSite': 'Lax',
-                            }
-                        )
+                        cookie = {
+                            'name': name,
+                            'value': value,
+                            'domain': request.origin.replace('https://', '').replace('http://', ''),
+                            'path': '/',
+                            'httpOnly': False,
+                            'secure': request.origin.startswith('https'),
+                            'sameSite': 'Lax',
+                        }
+                        cookies_list.append(cookie)
 
                 def _parse_storage(s):
                     if not s:
@@ -273,18 +271,16 @@ async def devtools_to_storage(
                 if '=' not in p:
                     continue
                 name, value = p.split('=', 1)
-                cookies_list.append(
-                    {
-                        'name': name,
-                        'value': value,
-                        'domain': origin.replace('https://', '').replace('http://', ''),
-                        'path': '/',
-                        'expires': None,
-                        'httpOnly': False,
-                        'secure': origin.startswith('https'),
-                        'sameSite': 'Lax',
-                    }
-                )
+                cookie = {
+                    'name': name,
+                    'value': value,
+                    'domain': origin.replace('https://', '').replace('http://', ''),
+                    'path': '/',
+                    'httpOnly': False,
+                    'secure': origin.startswith('https'),
+                    'sameSite': 'Lax',
+                }
+                cookies_list.append(cookie)
 
         def parse_storage(s):
             if not s:
