@@ -35,11 +35,12 @@ class AuthService:
         playwright = await async_playwright().start()
         browser = await playwright.chromium.launch(
             headless=True,
-            slow_mo=settings.BROWSER_SLOW_MO,
+            slow_mo=200,
             args=[
                 "--disable-blink-features=AutomationControlled",
                 "--no-sandbox",
                 "--disable-setuid-sandbox",
+                "--disable-dev-shm-usage",
             ],
         )
 
@@ -59,68 +60,226 @@ class AuthService:
             )
             page = await context.new_page()
 
-            await page.goto(f"{settings.TWITTER_BASE_URL}/i/flow/login", wait_until="domcontentloaded")
-            await page.wait_for_load_state("networkidle")
+            logger.info("Navigating to X login page...")
+            await page.goto(
+                f"{settings.TWITTER_BASE_URL}/i/flow/login",
+                wait_until="domcontentloaded",
+                timeout=30_000,
+            )
+
+            # Give the JS-heavy login page time to fully render
+            await page.wait_for_timeout(3000)
+
+            # Wait for ANY input to appear (Twitter renders inputs via React)
+            logger.info("Waiting for login form inputs to appear...")
+            try:
+                await page.wait_for_selector("input", timeout=15_000)
+            except PWTimeout:
+                return AuthResult(
+                    success=False,
+                    message=f"Login page did not render any inputs. URL: {page.url}",
+                )
+
             await page.wait_for_timeout(1000)
 
-            await self._fill_first_visible(page, [
-                'input[autocomplete="username"]',
-                'input[autocomplete="email"]',
-                'input[placeholder*="phone"]',
-                'input[placeholder*="username"]',
-                'input[aria-label*="phone"]',
-                'input[aria-label*="email"]',
-                'input[name="text"]',
-                'input[dir="auto"]',
-                'input[type="text"]',
-                'input',
-            ], username)
-            await self._click_text_or_selector(page, "Next", 'button[type="button"]')
-            await page.wait_for_load_state("networkidle")
-            await page.wait_for_timeout(1000)
+            # --- Step 1: Fill username ---
+            logger.info("Filling username...")
+            filled = await self._smart_fill(page, username, field_hint="username")
+            if not filled:
+                return AuthResult(
+                    success=False,
+                    message=f"Could not find username input. URL: {page.url}",
+                )
 
-            await self._fill_first_visible(page, [
-                'input[type="password"]',
-                'input[autocomplete="current-password"]',
-                'input[name="password"]',
-                'input[aria-label*="password"]',
-            ], password)
-            await self._click_text_or_selector(page, "Log in", 'button[data-testid="LoginForm_Login_Button"]')
-            await page.wait_for_load_state("networkidle")
-            await page.wait_for_timeout(2000)
+            await page.wait_for_timeout(500)
 
-            if await self._is_logged_in(page):
-                return await self._success_result(context, browser, playwright)
+            # Click Next
+            await self._click_next(page)
+            await page.wait_for_timeout(3000)
 
-            otp_selector = await self._find_2fa_input(page)
-            if otp_selector:
-                if not (two_factor_code or backup_code):
-                    return AuthResult(
-                        success=False,
-                        requires_2fa=True,
-                        message="Two-factor authentication required. Please provide a verification code or backup code.",
-                    )
-                code = backup_code or two_factor_code
-                await page.fill(otp_selector, code)
-                await page.keyboard.press("Enter")
+            # X sometimes shows an extra "Enter phone/username" challenge
+            # If a new text input appears that isn't a password, fill it with username again
+            challenge = await self._find_visible_input(page, input_type="text")
+            if challenge:
+                logger.info("Detected intermediate challenge input, filling username again...")
+                await challenge.fill(username)
+                await page.wait_for_timeout(300)
+                await self._click_next(page)
                 await page.wait_for_timeout(2500)
 
-                if await self._is_logged_in(page):
-                    return await self._success_result(context, browser, playwright)
+            # --- Step 2: Fill password ---
+            logger.info("Filling password...")
+            pwd_input = await self._find_visible_input(page, input_type="password")
+            if not pwd_input:
+                # Wait a bit more and retry
+                await page.wait_for_timeout(2000)
+                pwd_input = await self._find_visible_input(page, input_type="password")
 
+            if not pwd_input:
+                return AuthResult(
+                    success=False,
+                    message="Could not find password input after username step.",
+                )
+
+            await pwd_input.fill(password)
+            await page.wait_for_timeout(500)
+
+            # Click Log in
+            await self._click_login(page)
+            await page.wait_for_timeout(4000)
+
+            # --- Check result ---
+            if await self._is_logged_in(page):
+                return await self._success_result(context)
+
+            # Check for 2FA
+            otp_input = await self._find_visible_input(page, input_type="text")
+            if otp_input:
+                page_text = await page.inner_text("body")
+                is_2fa = any(k in page_text.lower() for k in [
+                    "verification", "two-factor", "2fa", "confirm your identity",
+                    "authentication code", "backup code", "security key"
+                ])
+                if is_2fa:
+                    if not (two_factor_code or backup_code):
+                        return AuthResult(
+                            success=False,
+                            requires_2fa=True,
+                            message="Two-factor authentication required. Please provide a verification code.",
+                        )
+                    code = two_factor_code or backup_code
+                    logger.info("Filling 2FA code...")
+                    await otp_input.fill(code)
+                    await page.wait_for_timeout(400)
+                    await page.keyboard.press("Enter")
+                    await page.wait_for_timeout(3500)
+
+                    if await self._is_logged_in(page):
+                        return await self._success_result(context)
+
+            page_url = page.url
+            page_text = (await page.inner_text("body"))[:300]
+            logger.error(f"Login failed. URL={page_url}. Page text: {page_text}")
             return AuthResult(
                 success=False,
-                message="Login did not complete. Check credentials, 2FA code, or X/Twitter challenge prompts.",
+                message="Login did not complete. Check your credentials or 2FA code.",
             )
+
         except PWTimeout as exc:
             return AuthResult(success=False, message=f"Login timed out: {exc}")
         except Exception as exc:
+            logger.exception("Unexpected error during authentication")
             return AuthResult(success=False, message=f"Login failed: {exc}")
         finally:
             await browser.close()
             await playwright.stop()
 
-    async def _success_result(self, context, browser, playwright) -> AuthResult:
+    async def _find_visible_input(self, page, input_type: str = "text"):
+        """Find the first visible input of a given type."""
+        selector = f'input[type="{input_type}"]'
+        try:
+            locator = page.locator(selector)
+            count = await locator.count()
+            for i in range(count):
+                el = locator.nth(i)
+                if await el.is_visible():
+                    return el
+        except Exception:
+            pass
+
+        # Fallback for type="text": also try inputs without explicit type
+        if input_type == "text":
+            try:
+                locator = page.locator('input:not([type="password"]):not([type="hidden"])')
+                count = await locator.count()
+                for i in range(count):
+                    el = locator.nth(i)
+                    if await el.is_visible():
+                        return el
+            except Exception:
+                pass
+        return None
+
+    async def _smart_fill(self, page, value: str, field_hint: str = "") -> bool:
+        """Fill the first visible text input on the page."""
+        # Ordered list of selectors to try
+        selectors = [
+            'input[autocomplete="username"]',
+            'input[autocomplete="email"]',
+            'input[name="text"]',
+            'input[dir="auto"]',
+            'input[data-testid="ocfEnterTextTextInput"]',
+        ]
+
+        for sel in selectors:
+            try:
+                loc = page.locator(sel)
+                count = await loc.count()
+                for i in range(count):
+                    el = loc.nth(i)
+                    if await el.is_visible():
+                        await el.fill(value)
+                        logger.info(f"Filled {field_hint} using selector: {sel}")
+                        return True
+            except Exception:
+                continue
+
+        # Last resort: first visible text input
+        el = await self._find_visible_input(page, input_type="text")
+        if el:
+            await el.fill(value)
+            logger.info(f"Filled {field_hint} using generic text input fallback")
+            return True
+
+        return False
+
+    async def _click_next(self, page):
+        """Click the Next button using multiple strategies."""
+        strategies = [
+            lambda: page.locator('button:has-text("Next")').first.click(),
+            lambda: page.get_by_role("button", name="Next").click(),
+            lambda: page.locator('[data-testid="LoginForm_Login_Button"]').click(),
+            lambda: page.keyboard.press("Enter"),
+        ]
+        for fn in strategies:
+            try:
+                await fn()
+                return
+            except Exception:
+                continue
+
+    async def _click_login(self, page):
+        """Click the Log in button."""
+        strategies = [
+            lambda: page.locator('[data-testid="LoginForm_Login_Button"]').click(),
+            lambda: page.locator('button:has-text("Log in")').first.click(),
+            lambda: page.get_by_role("button", name="Log in").click(),
+            lambda: page.keyboard.press("Enter"),
+        ]
+        for fn in strategies:
+            try:
+                await fn()
+                return
+            except Exception:
+                continue
+
+    async def _is_logged_in(self, page) -> bool:
+        """Check if we're on an authenticated page."""
+        try:
+            await page.wait_for_selector('[data-testid="primaryColumn"]', timeout=5_000)
+            return True
+        except Exception:
+            pass
+        # Secondary check: home URL
+        if page.url in (
+            "https://x.com/home",
+            "https://twitter.com/home",
+            "https://x.com/",
+        ):
+            return True
+        return False
+
+    async def _success_result(self, context) -> AuthResult:
         fd, temp_path = tempfile.mkstemp(suffix=".json")
         os.close(fd)
         try:
@@ -138,75 +297,3 @@ class AuthService:
                 os.remove(temp_path)
             except OSError:
                 pass
-
-    async def _is_logged_in(self, page) -> bool:
-        try:
-            await page.wait_for_selector('[data-testid="primaryColumn"]', timeout=4_000)
-            return True
-        except Exception:
-            return False
-
-    async def _find_2fa_input(self, page) -> Optional[str]:
-        selectors = [
-            'input[autocomplete="one-time-code"]',
-            'input[data-testid="ocfEnterTextTextInput"]',
-            'input[type="text"]',
-        ]
-        for selector in selectors:
-            try:
-                loc = page.locator(selector)
-                count = await loc.count()
-                for index in range(count):
-                    element = loc.nth(index)
-                    if await element.is_visible():
-                        return selector
-            except Exception:
-                continue
-        return None
-
-    async def _fill_first_visible(self, page, selectors, value: str):
-        for selector in selectors:
-            try:
-                loc = page.locator(selector)
-                count = await loc.count()
-                for index in range(count):
-                    element = loc.nth(index)
-                    if await element.is_visible():
-                        await element.fill(value)
-                        return
-            except Exception:
-                continue
-
-        # Last-resort fallback: fill the first visible textbox/input on the page.
-        try:
-            visible_inputs = page.locator('input, textarea, [contenteditable="true"]')
-            count = await visible_inputs.count()
-            for index in range(count):
-                element = visible_inputs.nth(index)
-                if await element.is_visible():
-                    try:
-                        await element.fill(value)
-                    except Exception:
-                        await element.click()
-                        await page.keyboard.type(value)
-                    return
-        except Exception:
-            pass
-
-        raise RuntimeError(
-            f"Could not find input field for selectors: {selectors}. Current URL: {page.url}"
-        )
-
-    async def _click_text_or_selector(self, page, text: str, selector: str):
-        try:
-            button = page.locator(selector)
-            if await button.count():
-                await button.first.click()
-                return
-        except Exception:
-            pass
-
-        try:
-            await page.get_by_text(text, exact=False).first.click()
-        except Exception:
-            raise RuntimeError(f"Could not click button '{text}' or selector '{selector}'")
