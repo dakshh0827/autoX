@@ -1,7 +1,7 @@
 import asyncio
 
 from fastapi import APIRouter, HTTPException, BackgroundTasks
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, RedirectResponse
 
 from app.models.schemas import (
     AgentRequest,
@@ -18,6 +18,11 @@ from app.core.logger import get_logger
 
 router = APIRouter()
 logger = get_logger(__name__)
+
+
+@router.get("/", include_in_schema=False)
+async def root() -> RedirectResponse:
+    return RedirectResponse(url="/api/v1/auth", status_code=302)
 
 
 @router.get(
@@ -103,6 +108,14 @@ async def auth_ui() -> HTMLResponse:
 async def run_agent(request: AgentRequest) -> AgentResponse:
     logger.info(f"POST /run — topic='{request.topic}'")
     try:
+        if not request.auth_storage_state_b64:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "This endpoint now requires user auth data. Open /api/v1/auth "
+                    "or send auth_storage_state_b64 in the request."
+                ),
+            )
         agent = TwitterAgent()
         result = await agent.run(request)
         if not result.success:
