@@ -81,6 +81,7 @@ class TwitterBrowser:
         self._browser: Optional[Browser] = None
         self._context: Optional[BrowserContext] = None
         self.page: Optional[Page] = None
+        self._has_storage_state = False
 
     # ── Lifecycle ─────────────────────────────────────────────────────────────
 
@@ -118,6 +119,8 @@ class TwitterBrowser:
                 logger.info("Using Playwright storage_state from STORAGE_STATE_B64 env")
             except Exception as e:
                 logger.warning(f"Could not decode STORAGE_STATE_B64: {e}")
+
+        self._has_storage_state = storage_state_arg is not None
 
         self._context = await self._browser.new_context(
             viewport={"width": 1280, "height": 900},
@@ -168,25 +171,33 @@ class TwitterBrowser:
     # ── Authentication ────────────────────────────────────────────────────────
 
     async def navigate_to_login(self):
-        """Open Twitter login page and wait for the user to authenticate."""
-        if settings.BROWSER_HEADLESS and not (
-            settings.STORAGE_STATE_FILE or settings.STORAGE_STATE_B64
-        ):
+        """Verify that the provided session is authenticated before continuing."""
+        if self._has_storage_state:
+            logger.info("Session data supplied — opening home feed to verify login")
+            await self.goto(f"{settings.TWITTER_BASE_URL}/home")
+            try:
+                await self.page.wait_for_selector(SEL["home_feed"], timeout=60_000)
+                logger.info("✅ Session data authenticated successfully")
+                return
+            except PWTimeout:
+                raise TimeoutError(
+                    "Provided session data did not produce an authenticated session. "
+                    "Generate a fresh storage_state and retry."
+                )
+
+        if settings.BROWSER_HEADLESS:
             raise RuntimeError(
-                "Headless mode requires authenticated user session data. "
+                "Headless mode requires authenticated session data. "
                 "Pass auth_storage_state_b64 in the /run request, or set "
                 "STORAGE_STATE_B64/STORAGE_STATE_FILE for the Space."
             )
 
-        logger.info("Opening Twitter login page — waiting for user authentication")
+        logger.info("No session data supplied — opening login page for manual auth")
         await self.goto(f"{settings.TWITTER_BASE_URL}/login")
 
-        # Wait until the home feed appears (user has logged in)
         logger.info("⏳ Waiting for user to log in (up to 3 minutes)…")
         try:
-            await self.page.wait_for_selector(
-                SEL["home_feed"], timeout=180_000  # 3 min
-            )
+            await self.page.wait_for_selector(SEL["home_feed"], timeout=180_000)
             logger.info("✅ User authenticated successfully")
         except PWTimeout:
             raise TimeoutError(

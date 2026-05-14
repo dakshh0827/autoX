@@ -1,19 +1,12 @@
-import asyncio
-
-from fastapi import APIRouter, HTTPException, BackgroundTasks
+from fastapi import APIRouter, HTTPException, Body
 from fastapi.responses import HTMLResponse, RedirectResponse
+import json
+import base64
+from typing import Optional
 
-from app.models.schemas import (
-    AgentRequest,
-    AgentResponse,
-    AuthRunRequest,
-    AuthRunResponse,
-    JobStatusResponse,
-)
-from app.services.agent import TwitterAgent
 from app.core.logger import get_logger
-from app.services.auth_service import AuthService
-from app.services.job_manager import job_manager
+from app.models.schemas import AgentRequest, AgentResponse
+from app.services.agent import TwitterAgent
 
 router = APIRouter()
 logger = get_logger(__name__)
@@ -24,7 +17,7 @@ async def root() -> RedirectResponse:
     return RedirectResponse(url="/api/v1/auth", status_code=302)
 
 
-@router.get("/auth", response_class=HTMLResponse, summary="Login UI")
+@router.get("/auth", response_class=HTMLResponse, summary="Session data UI")
 async def auth_ui() -> HTMLResponse:
     return HTMLResponse("""
 <!doctype html>
@@ -32,10 +25,9 @@ async def auth_ui() -> HTMLResponse:
 <head>
   <meta charset="utf-8"/>
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
-  <title>AutoX — Login</title>
+  <title>AutoX — Session Data</title>
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-
     body {
       min-height: 100vh;
       display: flex;
@@ -46,181 +38,82 @@ async def auth_ui() -> HTMLResponse:
       color: #e7e9ea;
       padding: 16px;
     }
-
     .card {
       background: #16181c;
       border: 1px solid #2f3336;
       border-radius: 16px;
       padding: 40px 36px;
       width: 100%;
-      max-width: 400px;
+      max-width: 520px;
       box-shadow: 0 8px 32px rgba(0,0,0,0.6);
     }
-
-    .logo {
-      display: flex;
-      align-items: center;
-      gap: 10px;
-      margin-bottom: 28px;
-    }
-
+    .logo { display: flex; align-items: center; gap: 10px; margin-bottom: 28px; }
     .logo svg { width: 28px; height: 28px; fill: #e7e9ea; flex-shrink: 0; }
-
-    .logo-text {
-      font-size: 22px;
-      font-weight: 700;
-      letter-spacing: -0.5px;
-    }
-
-    h2 {
-      font-size: 18px;
-      font-weight: 600;
-      margin-bottom: 6px;
-    }
-
-    .subtitle {
-      font-size: 13px;
-      color: #71767b;
-      margin-bottom: 28px;
-      line-height: 1.5;
-    }
-
+    .logo-text { font-size: 22px; font-weight: 700; letter-spacing: -0.5px; }
+    h2 { font-size: 18px; font-weight: 600; margin-bottom: 6px; }
+    .subtitle { font-size: 13px; color: #71767b; margin-bottom: 28px; line-height: 1.5; }
     .field { margin-bottom: 16px; }
-
     label {
-      display: block;
-      font-size: 12px;
-      font-weight: 500;
-      color: #71767b;
-      margin-bottom: 6px;
-      text-transform: uppercase;
-      letter-spacing: 0.5px;
+      display: block; font-size: 12px; font-weight: 500; color: #71767b;
+      margin-bottom: 6px; text-transform: uppercase; letter-spacing: 0.5px;
     }
-
-    input {
-      width: 100%;
-      padding: 12px 14px;
-      background: #000;
-      border: 1px solid #2f3336;
-      border-radius: 8px;
-      color: #e7e9ea;
-      font-size: 15px;
-      outline: none;
-      transition: border-color 0.2s;
+    input, textarea {
+      width: 100%; padding: 12px 14px; background: #000; border: 1px solid #2f3336;
+      border-radius: 8px; color: #e7e9ea; font-size: 14px; outline: none;
+      transition: border-color 0.2s; font-family: inherit;
     }
-
-    input:focus { border-color: #1d9bf0; }
-    input::placeholder { color: #3d4147; }
-
+    textarea {
+      min-height: 220px; resize: vertical; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+    }
+    input:focus, textarea:focus { border-color: #1d9bf0; }
+    input::placeholder, textarea::placeholder { color: #3d4147; }
     .btn {
-      width: 100%;
-      padding: 13px;
-      background: #1d9bf0;
-      border: none;
-      border-radius: 9999px;
-      color: #fff;
-      font-size: 15px;
-      font-weight: 700;
-      cursor: pointer;
-      margin-top: 8px;
-      transition: background 0.2s, opacity 0.2s;
+      width: 100%; padding: 13px; background: #1d9bf0; border: none; border-radius: 9999px;
+      color: #fff; font-size: 15px; font-weight: 700; cursor: pointer; margin-top: 8px;
     }
-
     .btn:hover { background: #1a8cd8; }
     .btn:disabled { opacity: 0.5; cursor: not-allowed; }
-
     .status {
-      margin-top: 20px;
-      padding: 12px 14px;
-      border-radius: 8px;
-      font-size: 14px;
-      line-height: 1.5;
-      display: none;
+      margin-top: 20px; padding: 12px 14px; border-radius: 8px; font-size: 14px; line-height: 1.5; display: none;
     }
-
     .status.info    { background: #1e2a3a; border: 1px solid #1d9bf0; color: #7ec8f7; display: block; }
     .status.error   { background: #2a1a1a; border: 1px solid #f4212e; color: #f4646e; display: block; }
     .status.success { background: #0d2118; border: 1px solid #00ba7c; color: #4dce9d; display: block; }
-
     .spinner {
-      display: inline-block;
-      width: 14px; height: 14px;
-      border: 2px solid rgba(255,255,255,0.3);
-      border-top-color: #fff;
-      border-radius: 50%;
-      animation: spin 0.7s linear infinite;
-      vertical-align: middle;
-      margin-right: 6px;
+      display: inline-block; width: 14px; height: 14px; border: 2px solid rgba(255,255,255,0.3);
+      border-top-color: #fff; border-radius: 50%; animation: spin 0.7s linear infinite;
+      vertical-align: middle; margin-right: 6px;
     }
     @keyframes spin { to { transform: rotate(360deg); } }
-
-    .hidden { display: none !important; }
-
-    #jobSection { margin-top: 24px; }
-    .job-id {
-      font-size: 11px;
-      color: #71767b;
-      word-break: break-all;
-      margin-top: 8px;
-    }
-    .poll-bar {
-      height: 3px;
-      background: #1d9bf0;
-      border-radius: 2px;
-      width: 0%;
-      transition: width 0.5s;
-      margin-top: 12px;
-    }
   </style>
 </head>
 <body>
 <div class="card">
   <div class="logo">
-    <!-- X logo -->
     <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
       <path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-4.714-6.231-5.401 6.231H2.746l7.73-8.835L1.254 2.25H8.08l4.259 5.631 5.905-5.631zm-1.161 17.52h1.833L7.084 4.126H5.117z"/>
     </svg>
     <span class="logo-text">AutoX</span>
   </div>
 
-  <h2>Sign in to get started</h2>
-  <p class="subtitle">Enter your X / Twitter credentials. Your password is used only to authenticate — it is never stored.</p>
+  <h2>Paste session data</h2>
+  <p class="subtitle">Paste your base64-encoded Playwright storage state. The backend uses it to start the browser already authenticated.</p>
 
   <div class="field">
     <label for="topic">Topic</label>
-    <input id="topic" type="text" placeholder="e.g. AI in healthcare" autocomplete="off"/>
+    <input id="topic" type="text" placeholder="e.g. Current situation between China and Taiwan" autocomplete="off"/>
   </div>
 
   <div class="field">
-    <label for="username">Username or Email</label>
-    <input id="username" type="text" placeholder="@handle or email" autocomplete="username"/>
-  </div>
-
-  <div class="field">
-    <label for="password">Password</label>
-    <input id="password" type="password" placeholder="••••••••" autocomplete="current-password"/>
-  </div>
-
-  <div id="twoFactorField" class="field hidden">
-    <label for="twoFactor">2FA / Verification Code</label>
-    <input id="twoFactor" type="text" placeholder="6-digit code or backup code" autocomplete="one-time-code" inputmode="numeric"/>
+    <label for="sessionData">Session Data (base64 storage_state)</label>
+    <textarea id="sessionData" placeholder="Paste base64 storage_state here"></textarea>
   </div>
 
   <button class="btn" id="submitBtn" onclick="handleSubmit()">Start</button>
-
   <div id="status" class="status"></div>
-
-  <div id="jobSection" class="hidden">
-    <div class="poll-bar" id="pollBar"></div>
-    <div class="job-id" id="jobIdLabel"></div>
-  </div>
 </div>
 
 <script>
-  let jobId = null;
-  let pollInterval = null;
-  let pollProgress = 0;
-
   function setStatus(msg, type) {
     const el = document.getElementById('status');
     el.className = 'status ' + type;
@@ -230,99 +123,40 @@ async def auth_ui() -> HTMLResponse:
   function setLoading(loading) {
     const btn = document.getElementById('submitBtn');
     btn.disabled = loading;
-    btn.innerHTML = loading
-      ? '<span class="spinner"></span> Working…'
-      : 'Start';
+    btn.innerHTML = loading ? '<span class="spinner"></span> Working…' : 'Start';
   }
 
   async function handleSubmit() {
-    const topic    = document.getElementById('topic').value.trim();
-    const username = document.getElementById('username').value.trim();
-    const password = document.getElementById('password').value;
-    const twoFactor = document.getElementById('twoFactor').value.trim();
+    const topic = document.getElementById('topic').value.trim();
+    const sessionData = document.getElementById('sessionData').value.trim();
 
-    if (!topic)    { setStatus('Please enter a topic.', 'error'); return; }
-    if (!username) { setStatus('Please enter your username or email.', 'error'); return; }
-    if (!password) { setStatus('Please enter your password.', 'error'); return; }
+    if (!topic) { setStatus('Please enter a topic.', 'error'); return; }
+    if (!sessionData) { setStatus('Please paste your session data.', 'error'); return; }
 
     setLoading(true);
-    setStatus('<span class="spinner"></span> Authenticating with X…', 'info');
-
-    const payload = { topic, username, password };
-    if (twoFactor) payload.two_factor_code = twoFactor;
+    setStatus('<span class="spinner"></span> Starting headless run…', 'info');
 
     try {
-      const res  = await fetch('/api/v1/auth-run', {
+      const res = await fetch('/api/v1/run', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload),
+        body: JSON.stringify({ topic, auth_storage_state_b64: sessionData }),
       });
       const data = await res.json();
 
-      if (data.requires_2fa) {
-        document.getElementById('twoFactorField').classList.remove('hidden');
-        setStatus('Two-factor authentication required. Enter your code above and click Start again.', 'info');
+      if (!res.ok || !data.success) {
+        setStatus('❌ ' + (data.detail || data.message || 'Run failed.'), 'error');
         setLoading(false);
         return;
       }
 
-      if (!data.success) {
-        setStatus('❌ ' + (data.message || 'Authentication failed.'), 'error');
-        setLoading(false);
-        return;
-      }
-
-      // Successfully queued
-      jobId = data.job_id;
-      document.getElementById('jobSection').classList.remove('hidden');
-      document.getElementById('jobIdLabel').textContent = 'Job ID: ' + jobId;
-      setStatus('✅ Authenticated! Background job is running…', 'success');
-      startPolling();
-
+      setStatus('✅ Session accepted. The backend is running headless now.', 'success');
+      setLoading(false);
     } catch (err) {
       setStatus('❌ Network error: ' + err.message, 'error');
       setLoading(false);
     }
   }
-
-  function startPolling() {
-    pollProgress = 5;
-    pollInterval = setInterval(pollJob, 4000);
-  }
-
-  async function pollJob() {
-    if (!jobId) return;
-    try {
-      const res  = await fetch('/api/v1/jobs/' + jobId);
-      const data = await res.json();
-
-      pollProgress = Math.min(pollProgress + 8, 90);
-      document.getElementById('pollBar').style.width = pollProgress + '%';
-
-      if (data.status === 'completed') {
-        clearInterval(pollInterval);
-        document.getElementById('pollBar').style.width = '100%';
-        setStatus('🎉 Done! ' + (data.message || 'Thread posted successfully.'), 'success');
-        setLoading(false);
-      } else if (data.status === 'failed') {
-        clearInterval(pollInterval);
-        document.getElementById('pollBar').style.width = '100%';
-        setStatus('❌ Job failed: ' + (data.message || 'Unknown error.'), 'error');
-        setLoading(false);
-      } else {
-        setStatus('<span class="spinner"></span> ' + (data.message || 'Running…'), 'info');
-      }
-    } catch (e) {
-      // Network blip — keep polling
-    }
-  }
-
-  // Allow Enter key to submit
-  document.addEventListener('keydown', e => {
-    if (e.key === 'Enter' && !document.getElementById('submitBtn').disabled) {
-      handleSubmit();
-    }
-  });
 </script>
 </body>
 </html>
@@ -332,16 +166,77 @@ async def auth_ui() -> HTMLResponse:
 @router.post(
     "/run",
     response_model=AgentResponse,
-    summary="Run the Twitter AI Agent (direct, blocking)",
+    summary="Run the Twitter AI Agent (session-data auth)",
 )
 async def run_agent(request: AgentRequest) -> AgentResponse:
     logger.info(f"POST /run — topic='{request.topic}'")
     try:
-        if not request.auth_storage_state_b64 and not (request.username and request.password):
-            raise HTTPException(
-                status_code=400,
-                detail="Provide username+password or auth_storage_state_b64.",
+    # If no Playwright storage_state was provided, allow users to send
+    # DevTools-extracted data (cookies/localStorage). Convert it to a
+    # Playwright storage_state in-flight.
+    if not request.auth_storage_state_b64:
+      # require at least some devtools data
+      if not (request.cookies or request.local_storage or request.session_storage):
+        raise HTTPException(
+          status_code=400,
+          detail="Provide auth_storage_state_b64 or DevTools fields (cookies/local_storage).",
+        )
+
+      # Convert DevTools data into Playwright storage_state JSON
+      try:
+        cookies_list = []
+        if request.cookies:
+          parts = [c.strip() for c in request.cookies.split(';') if c.strip()]
+          for p in parts:
+            if '=' not in p:
+              continue
+            name, value = p.split('=', 1)
+            cookies_list.append(
+              {
+                'name': name,
+                'value': value,
+                'domain': request.origin.replace('https://', '').replace('http://', ''),
+                'path': '/',
+                'expires': None,
+                'httpOnly': False,
+                'secure': request.origin.startswith('https'),
+                'sameSite': 'Lax',
+              }
             )
+
+        def _parse_storage(s):
+          if not s:
+            return []
+          if isinstance(s, str):
+            try:
+              obj = json.loads(s)
+            except Exception:
+              return []
+          else:
+            obj = s
+          items = []
+          if isinstance(obj, dict):
+            for k, v in obj.items():
+              items.append({'name': k, 'value': str(v)})
+          return items
+
+        origin_local = _parse_storage(request.local_storage)
+        origin_session = _parse_storage(request.session_storage)
+
+        storage_state = {'cookies': cookies_list, 'origins': []}
+        if origin_local or origin_session:
+          storage_state['origins'].append({'origin': request.origin, 'localStorage': origin_local})
+
+        raw = json.dumps(storage_state, ensure_ascii=False)
+        b64 = base64.b64encode(raw.encode()).decode()
+
+        # Build a new AgentRequest with the generated storage_state
+        req_dict = request.model_dump()
+        req_dict['auth_storage_state_b64'] = b64
+        request = AgentRequest(**req_dict)
+      except Exception as e:
+        logger.error(f"Error converting DevTools data: {e}", exc_info=True)
+        raise HTTPException(status_code=400, detail="Invalid DevTools data format")
         agent = TwitterAgent()
         result = await agent.run(request)
         if not result.success:
@@ -354,87 +249,80 @@ async def run_agent(request: AgentRequest) -> AgentResponse:
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.post("/auth-run", response_model=AuthRunResponse)
-async def auth_run(request: AuthRunRequest) -> AuthRunResponse:
-    logger.info(f"POST /auth-run — topic='{request.topic}' user='{request.username}'")
-    auth_service = AuthService()
-    result = await auth_service.authenticate(
-        username=request.username,
-        password=request.password,
-        two_factor_code=request.two_factor_code,
-        backup_code=request.backup_code,
-    )
+  @router.post(
+    "/devtools-to-storage",
+    summary="Convert browser DevTools export to Playwright storage_state (base64)",
+  )
+  async def devtools_to_storage(
+    cookies: Optional[str] = Body(None, description="Value of document.cookie (e.g. 'a=1; b=2')"),
+    local_storage: Optional[str] = Body(None, description="JSON string or object of localStorage contents"),
+    session_storage: Optional[str] = Body(None, description="JSON string or object of sessionStorage contents"),
+    origin: Optional[str] = Body("https://x.com", description="Origin to attach localStorage to (default https://x.com)"),
+  ) -> dict:
+    """Convert devtools-extracted `document.cookie` + local/session storage into a Playwright storage_state JSON and return it base64-encoded.
 
-    if result.requires_2fa:
-        return AuthRunResponse(
-            success=False,
-            status="requires_2fa",
-            message=result.message,
-            requires_2fa=True,
-        )
+    NOTE: HttpOnly cookies are not available via `document.cookie` and will be missing. This converter helps non-technical users create a usable partial storage_state.
+    """
+    try:
+      cookies_list = []
+      if cookies:
+        # parse document.cookie style string
+        parts = [c.strip() for c in cookies.split(';') if c.strip()]
+        for p in parts:
+          if '=' not in p:
+            continue
+          name, value = p.split('=', 1)
+          cookies_list.append(
+            {
+              'name': name,
+              'value': value,
+              'domain': origin.replace('https://', '').replace('http://', ''),
+              'path': '/',
+              'expires': None,
+              'httpOnly': False,
+              'secure': origin.startswith('https'),
+              'sameSite': 'Lax',
+            }
+          )
 
-    if not result.success or not result.storage_state_b64:
-        return AuthRunResponse(
-            success=False,
-            status="failed",
-            message=result.message or "Authentication failed.",
-        )
+      def parse_storage(s):
+        if not s:
+          return []
+        if isinstance(s, str):
+          try:
+            obj = json.loads(s)
+          except Exception:
+            # try to parse as JS object copied from console (fallback)
+            return []
+        else:
+          obj = s
+        items = []
+        if isinstance(obj, dict):
+          for k, v in obj.items():
+            items.append({'name': k, 'value': str(v)})
+        return items
 
-    job = job_manager.create_job(message="Authentication successful. Starting headless work.")
+      origin_local = parse_storage(local_storage)
+      origin_session = parse_storage(session_storage)
 
-    async def _run_background() -> None:
-        try:
-            job_manager.update(job.job_id, status="running", message="Running agent…")
-            agent = TwitterAgent()
-            response = await agent.run(
-                AgentRequest(
-                    topic=request.topic,
-                    auth_storage_state_b64=result.storage_state_b64,
-                )
-            )
-            if response.success:
-                job_manager.update(
-                    job.job_id,
-                    status="completed",
-                    message=response.message,
-                    success=True,
-                    result=response.model_dump(),
-                )
-            else:
-                job_manager.update(
-                    job.job_id,
-                    status="failed",
-                    message=response.message,
-                    success=False,
-                    error=response.message,
-                )
-        except Exception as exc:
-            job_manager.update(
-                job.job_id,
-                status="failed",
-                message=str(exc),
-                success=False,
-                error=str(exc),
-            )
+      storage_state = {
+        'cookies': cookies_list,
+        'origins': []
+      }
+      if origin_local or origin_session:
+        origin_entry = {'origin': origin, 'localStorage': origin_local}
+        # Playwright storage_state does not have a sessionStorage field; sessionStorage will be ignored by Playwright.
+        storage_state['origins'].append(origin_entry)
 
-    asyncio.create_task(_run_background())
+      # return base64-encoded JSON
+      raw = json.dumps(storage_state, ensure_ascii=False)
+      b64 = base64.b64encode(raw.encode()).decode()
 
-    return AuthRunResponse(
-        success=True,
-        job_id=job.job_id,
-        status="queued",
-        message="Authenticated. Background job started.",
-    )
+      warning = None
+      if cookies and not any(c.get('httpOnly', False) for c in cookies_list):
+        warning = 'HttpOnly cookies are not captured from the browser console; some sites may require full storage_state from Playwright.'
 
-
-@router.get("/jobs/{job_id}", response_model=JobStatusResponse)
-async def get_job_status(job_id: str) -> JobStatusResponse:
-    job = job_manager.get(job_id)
-    if not job:
-        raise HTTPException(status_code=404, detail="Job not found")
-    return JobStatusResponse(
-        job_id=job.job_id,
-        status=job.status,
-        message=job.message,
-        success=job.success,
-    )
+      return {'storage_state_b64': b64, 'warning': warning}
+    except Exception as e:
+      logger.error(f"Error converting devtools data: {e}", exc_info=True)
+      raise HTTPException(status_code=400, detail=str(e))

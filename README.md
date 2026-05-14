@@ -11,23 +11,9 @@ Check out the configuration reference at https://huggingface.co/docs/hub/spaces-
 
 ## Authentication for real users
 
-This app now supports a temporary login UI. Each user enters their own
-credentials, the backend authenticates headlessly, and then the real work runs
-in the background.
-
-### UI flow
-
-1. Open `/api/v1/auth`.
-2. Enter topic, username/email, and password.
-3. If X asks for 2FA, enter the verification or backup code.
-4. After login succeeds, the UI closes and the backend job keeps running.
-
-### API flow
-
-If you want to call the API directly, send a request to `/api/v1/run` with
-`topic`, `username`, `password`, and optionally `two_factor_code` or
-`backup_code`. The backend will authenticate, save a temporary session, and
-start the job in headless mode.
+This app now uses request-provided session data. Each user supplies their own
+base64-encoded Playwright `storage_state`, and the backend uses that session to
+run headless.
 
 ### Create a session locally
 
@@ -51,8 +37,8 @@ Send the encoded state in `auth_storage_state_b64`:
 }
 ```
 
-If you deploy on Hugging Face Spaces, store the same value as a secret named
-`STORAGE_STATE_B64` or pass it per request as shown above.
+If you deploy on Hugging Face Spaces, you can store the same value as a secret
+named `STORAGE_STATE_B64` or pass it per request as shown above.
 
 ### Important
 

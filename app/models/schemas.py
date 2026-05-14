@@ -17,33 +17,25 @@ class AgentRequest(BaseModel):
             "authenticated X/Twitter session. Pass this for headless runs in Spaces."
         ),
     )
-    username: Optional[str] = Field(default=None, max_length=200)
-    password: Optional[str] = Field(default=None, max_length=200)
-    two_factor_code: Optional[str] = Field(default=None, max_length=50)
-    backup_code: Optional[str] = Field(default=None, max_length=50)
-
-
-class AuthRunRequest(BaseModel):
-    topic: str = Field(..., min_length=3, max_length=200)
-    username: str = Field(..., min_length=1, max_length=200)
-    password: str = Field(..., min_length=1, max_length=200)
-    two_factor_code: Optional[str] = Field(default=None, max_length=50)
-    backup_code: Optional[str] = Field(default=None, max_length=50)
-
-
-class AuthRunResponse(BaseModel):
-    success: bool
-    job_id: Optional[str] = None
-    status: str
-    message: str
-    requires_2fa: bool = False
-
-
-class JobStatusResponse(BaseModel):
-    job_id: str
-    status: str
-    message: str
-    success: Optional[bool] = None
+    # If users cannot produce a Playwright storage_state, they can provide values
+    # copied from the browser DevTools. The server will convert them into a
+    # Playwright storage_state in-flight.
+    cookies: Optional[str] = Field(
+        default=None,
+        description="The `document.cookie` string copied from DevTools (e.g. 'a=1; b=2')",
+    )
+    local_storage: Optional[str] = Field(
+        default=None,
+        description="A JSON string representing `localStorage` (copy via DevTools)",
+    )
+    session_storage: Optional[str] = Field(
+        default=None,
+        description="A JSON string representing `sessionStorage` (optional)",
+    )
+    origin: Optional[str] = Field(
+        default="https://x.com",
+        description="Origin to attach the storage to (default https://x.com)",
+    )
 
 
 class ThreadResult(BaseModel):
