@@ -38,6 +38,41 @@ class AgentRequest(BaseModel):
     )
 
 
+class AuthRunRequest(BaseModel):
+    topic: str = Field(
+        ...,
+        min_length=3,
+        max_length=200,
+        description="The topic the agent should create content and engage around",
+        examples=["The future of renewable energy in India"],
+    )
+    username: str = Field(..., min_length=1, description="X/Twitter username or email")
+    password: str = Field(..., min_length=1, description="X/Twitter password")
+    two_factor_code: Optional[str] = Field(
+        default=None,
+        description="Optional verification code used when 2FA is required",
+    )
+    backup_code: Optional[str] = Field(
+        default=None,
+        description="Optional backup code used when 2FA is required",
+    )
+
+
+class AuthRunResponse(BaseModel):
+    success: bool
+    status: str
+    message: str
+    requires_2fa: bool = False
+    job_id: Optional[str] = None
+
+
+class JobStatusResponse(BaseModel):
+    job_id: str
+    status: str
+    message: str
+    success: Optional[bool] = None
+
+
 class ThreadResult(BaseModel):
     tweets: List[str]
     tweet_count: int

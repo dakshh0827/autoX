@@ -99,9 +99,19 @@ class AuthService:
                 )
             await page.wait_for_timeout(600)
 
-            # Click Next
-            await self._click_button_by_text(page, ["Next"])
-            await page.wait_for_timeout(3000)
+            # Submit the username step the same way a user would.
+            await self._advance_login_step(page)
+            password_step_appeared = False
+            try:
+                await page.wait_for_selector(
+                    'input[type="password"], input[autocomplete="current-password"], input[name="password"], input[data-testid="ocfEnterPasswordPasswordInput"]',
+                    timeout=15_000,
+                )
+                password_step_appeared = True
+            except PWTimeout:
+                logger.warning(f"Password step did not appear. URL={page.url}")
+            if not password_step_appeared:
+                await page.wait_for_timeout(1000)
 
             # ── Step 5: Handle possible "confirm username" challenge ───────────
             # X sometimes shows an extra screen asking to confirm phone/username
@@ -110,7 +120,7 @@ class AuthService:
                 logger.info("Detected identity confirmation screen, re-entering username...")
                 await self._fill_first_visible_text_input(page, username)
                 await page.wait_for_timeout(400)
-                await self._click_button_by_text(page, ["Next"])
+                await self._advance_login_step(page)
                 await page.wait_for_timeout(2500)
 
             # ── Step 6: Fill password ─────────────────────────────────────────
@@ -120,6 +130,8 @@ class AuthService:
                 await page.wait_for_timeout(2000)
                 pwd_filled = await self._fill_password(page, password)
             if not pwd_filled:
+                body_text = (await page.inner_text("body")).lower()
+                logger.warning(f"Password input not found. URL={page.url}. Body snippet={body_text[:300]}")
                 return AuthResult(
                     success=False,
                     message="Could not find password input. Login flow may have changed.",
@@ -252,6 +264,8 @@ class AuthService:
             'input[type="password"]',
             'input[autocomplete="current-password"]',
             'input[name="password"]',
+            'input[data-testid="ocfEnterPasswordPasswordInput"]',
+            'input[placeholder*="Password" i]',
         ]
         for sel in selectors:
             try:
@@ -265,6 +279,31 @@ class AuthService:
                         return True
             except Exception:
                 continue
+
+        for text in ["Password"]:
+            try:
+                el = page.get_by_label(text).first
+                if await el.is_visible():
+                    await el.fill(value)
+                    logger.info(f"Filled password via label: {text}")
+                    return True
+            except Exception:
+                pass
+
+        try:
+            loc = page.locator('input:not([type="hidden"]):not([type="text"])')
+            count = await loc.count()
+            for i in range(count):
+                el = loc.nth(i)
+                if await el.is_visible():
+                    placeholder = await el.get_attribute("placeholder")
+                    aria_label = await el.get_attribute("aria-label")
+                    if (placeholder and "password" in placeholder.lower()) or (aria_label and "password" in aria_label.lower()):
+                        await el.fill(value)
+                        logger.info("Filled password via placeholder/aria-label fallback")
+                        return True
+        except Exception:
+            pass
         return False
 
     async def _fill_first_visible_text_input(self, page, value: str) -> bool:
@@ -280,6 +319,35 @@ class AuthService:
         except Exception:
             pass
         return False
+
+    async def _advance_login_step(self, page):
+        """Submit the current login step using keyboard and button fallbacks."""
+        try:
+            focused = page.locator('input[autocomplete="username"], input[autocomplete="email"], input[name="text"], input[data-testid="ocfEnterTextTextInput"], input[dir="auto"]').first
+            if await focused.is_visible():
+                await focused.focus()
+                await focused.press("Enter")
+                await page.wait_for_timeout(1000)
+        except Exception:
+            pass
+
+        for selector in [
+            'button[data-testid="ocfEnterTextNextButton"]',
+            'button[type="submit"]:has-text("Next")',
+            'button:has-text("Next")',
+        ]:
+            try:
+                button = page.locator(selector).first
+                if await button.is_visible():
+                    await button.click()
+                    logger.info(f"Clicked login step button via selector: {selector}")
+                    await page.wait_for_timeout(1000)
+                    return
+            except Exception:
+                continue
+
+        await page.keyboard.press("Enter")
+        await page.wait_for_timeout(1000)
 
     async def _click_button_by_text(self, page, texts: list[str]):
         """Click the first visible button/link matching any of the given texts."""

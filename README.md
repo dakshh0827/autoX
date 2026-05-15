@@ -11,37 +11,31 @@ Check out the configuration reference at https://huggingface.co/docs/hub/spaces-
 
 ## Authentication for real users
 
-This app now uses request-provided session data. Each user supplies their own
-base64-encoded Playwright `storage_state`, and the backend uses that session to
-run headless.
+This app now logs into X using the user's username and password. The backend
+opens the landing page, clicks the sign-in button, fills the login form, and
+then runs the agent with the authenticated browser session.
 
-### Create a session locally
+### Run with credentials
 
-1. Run the helper in headful mode:
-
-```bash
-python tools/save_storage_state.py
-```
-
-2. Complete the X/Twitter login in the browser.
-3. Copy the generated `storage_state.json` and base64-encode it.
-
-### Send the session with a request
-
-Send the encoded state in `auth_storage_state_b64`:
+Send the login details directly in the request:
 
 ```json
 {
 	"topic": "Renewable energy in India",
-	"auth_storage_state_b64": "<base64-encoded-storage-state>"
+	"username": "your-handle-or-email",
+	"password": "your-password"
 }
 ```
 
-If you deploy on Hugging Face Spaces, you can store the same value as a secret
-named `STORAGE_STATE_B64` or pass it per request as shown above.
+If X requires a verification code, include `two_factor_code` or `backup_code`.
+
+### Background mode
+
+The `/api/v1/auth-run` endpoint performs the same login flow and then queues the
+agent in the background.
 
 ### Important
 
 - Keep `BROWSER_HEADLESS=true` in Spaces.
-- Do not commit your storage state to the repo.
-- Each real user should use their own login/session data.
+- Do not commit user credentials to the repo.
+- Each real user should use their own login details.
