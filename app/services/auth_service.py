@@ -4,6 +4,7 @@ import asyncio
 import base64
 import json
 import os
+import random
 import tempfile
 from dataclasses import dataclass
 from typing import Optional
@@ -34,8 +35,8 @@ class AuthService:
     ) -> AuthResult:
         playwright = await async_playwright().start()
         browser = await playwright.chromium.launch(
-            headless=True,
-            slow_mo=100,
+            headless=settings.BROWSER_HEADLESS,
+            slow_mo=settings.BROWSER_SLOW_MO,
             args=[
                 "--disable-blink-features=AutomationControlled",
                 "--no-sandbox",
@@ -112,6 +113,22 @@ class AuthService:
                 logger.warning(f"Password step did not appear. URL={page.url}")
             if not password_step_appeared:
                 await page.wait_for_timeout(1000)
+                # Retry the username submit using human-like typing in case
+                # the page rejected the programmatic fill. This often fixes
+                # flaky flows where X expects key events.
+                for attempt in range(2):
+                    logger.info(f"Retrying username submit (human typing) attempt={attempt+1}")
+                    await self._human_type_first_visible_text_input(page, username)
+                    await self._advance_login_step(page)
+                    try:
+                        await page.wait_for_selector(
+                            'input[type="password"], input[autocomplete="current-password"], input[name="password"], input[data-testid="ocfEnterPasswordPasswordInput"]',
+                            timeout=10_000,
+                        )
+                        password_step_appeared = True
+                        break
+                    except PWTimeout:
+                        await page.wait_for_timeout(800)
 
             # ── Step 5: Handle possible "confirm username" challenge ───────────
             # X sometimes shows an extra screen asking to confirm phone/username
@@ -348,6 +365,25 @@ class AuthService:
 
         await page.keyboard.press("Enter")
         await page.wait_for_timeout(1000)
+
+    async def _human_type_first_visible_text_input(self, page, value: str) -> bool:
+        """Find the first visible text input and type into it with human-like delays."""
+        try:
+            loc = page.locator('input:not([type="password"]):not([type="hidden"])')
+            count = await loc.count()
+            for i in range(count):
+                el = loc.nth(i)
+                if await el.is_visible():
+                    await el.click()
+                    # Type like a human
+                    for ch in value:
+                        await page.keyboard.type(ch)
+                        await asyncio.sleep(random.uniform(0.03, 0.12))
+                    logger.info("Typed username with human-like delays")
+                    return True
+        except Exception:
+            pass
+        return False
 
     async def _click_button_by_text(self, page, texts: list[str]):
         """Click the first visible button/link matching any of the given texts."""
