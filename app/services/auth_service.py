@@ -61,25 +61,19 @@ class AuthService:
             )
             page = await context.new_page()
 
-            # ── Step 1: Go to x.com landing page ─────────────────────────────
-            logger.info("Navigating to x.com...")
-            await page.goto("https://x.com", wait_until="domcontentloaded", timeout=30_000)
+            # ── Step 1: Go directly to the login flow ─────────────────────────
+            # Skip the landing page entirely — go straight to the login flow.
+            # This avoids the flaky "Sign in" button click on the landing page
+            # and gives us a predictable starting point.
+            logger.info("Navigating directly to X login flow...")
+            await page.goto(
+                "https://x.com/i/flow/login",
+                wait_until="domcontentloaded",
+                timeout=30_000,
+            )
             await page.wait_for_timeout(3000)
 
-            # ── Step 2: Click "Sign in" button on the landing page ────────────
-            logger.info("Looking for Sign in button on landing page...")
-            signed_in = await self._click_sign_in_button(page)
-            if not signed_in:
-                # Fallback: go directly to the login flow URL
-                logger.info("Sign in button not found, navigating directly to login flow...")
-                await page.goto(
-                    "https://x.com/i/flow/login",
-                    wait_until="domcontentloaded",
-                    timeout=30_000,
-                )
-            await page.wait_for_timeout(3000)
-
-            # ── Step 3: Wait for username input to appear ─────────────────────
+            # ── Step 2: Wait for username input ──────────────────────────────
             logger.info("Waiting for username input...")
             try:
                 await page.wait_for_selector("input", timeout=15_000)
@@ -90,81 +84,89 @@ class AuthService:
                 )
             await page.wait_for_timeout(1000)
 
-            # ── Step 4: Fill username ─────────────────────────────────────────
+            # ── Step 3: Fill username with human-like typing ──────────────────
             logger.info(f"Filling username: {username}")
-            filled = await self._fill_username(page, username)
+            filled = await self._fill_username_human(page, username)
             if not filled:
                 return AuthResult(
                     success=False,
                     message=f"Could not find username input. URL: {page.url}",
                 )
-            await page.wait_for_timeout(600)
+            await page.wait_for_timeout(800)
 
-            # Submit the username step the same way a user would.
+            # ── Step 4: Click Next and wait for password field ────────────────
+            logger.info("Clicking Next button...")
             await self._advance_login_step(page)
-            password_step_appeared = False
+
+            # Wait generously for password field
+            password_appeared = False
             try:
                 await page.wait_for_selector(
-                    'input[type="password"], input[autocomplete="current-password"], input[name="password"], input[data-testid="ocfEnterPasswordPasswordInput"]',
+                    'input[type="password"]',
                     timeout=15_000,
                 )
-                password_step_appeared = True
+                password_appeared = True
+                logger.info("Password field appeared ✅")
             except PWTimeout:
-                logger.warning(f"Password step did not appear. URL={page.url}")
-            if not password_step_appeared:
-                await page.wait_for_timeout(1000)
-                # Retry the username submit using human-like typing in case
-                # the page rejected the programmatic fill. This often fixes
-                # flaky flows where X expects key events.
-                for attempt in range(2):
-                    logger.info(f"Retrying username submit (human typing) attempt={attempt+1}")
-                    await self._human_type_first_visible_text_input(page, username)
+                logger.warning(
+                    f"Password field did not appear after first Next click. URL={page.url}"
+                )
+
+            # ── Step 5: Handle "confirm username/phone" challenge ─────────────
+            if not password_appeared:
+                body_text = (await page.inner_text("body")).lower()
+                if any(k in body_text for k in [
+                    "enter your phone", "enter your username",
+                    "confirm your identity", "unusual login",
+                ]):
+                    logger.info("Identity confirmation screen — re-entering username...")
+                    await self._fill_first_visible_text_input(page, username)
+                    await page.wait_for_timeout(600)
                     await self._advance_login_step(page)
                     try:
                         await page.wait_for_selector(
-                            'input[type="password"], input[autocomplete="current-password"], input[name="password"], input[data-testid="ocfEnterPasswordPasswordInput"]',
-                            timeout=10_000,
+                            'input[type="password"]', timeout=12_000
                         )
-                        password_step_appeared = True
-                        break
+                        password_appeared = True
+                        logger.info("Password field appeared after identity confirmation ✅")
                     except PWTimeout:
-                        await page.wait_for_timeout(800)
+                        logger.warning("Still no password field after identity confirmation")
 
-            # ── Step 5: Handle possible "confirm username" challenge ───────────
-            # X sometimes shows an extra screen asking to confirm phone/username
-            body_text = (await page.inner_text("body")).lower()
-            if any(k in body_text for k in ["enter your phone", "enter your username", "confirm your identity"]):
-                logger.info("Detected identity confirmation screen, re-entering username...")
-                await self._fill_first_visible_text_input(page, username)
-                await page.wait_for_timeout(400)
-                await self._advance_login_step(page)
-                await page.wait_for_timeout(2500)
+            if not password_appeared:
+                url = page.url
+                body_snippet = (await page.inner_text("body"))[:300]
+                logger.error(
+                    f"Password step never appeared. URL={url}\nBody: {body_snippet}"
+                )
+                return AuthResult(
+                    success=False,
+                    message=(
+                        "Could not advance past the username step. "
+                        "X may have changed their login flow or rate-limited this IP."
+                    ),
+                )
 
             # ── Step 6: Fill password ─────────────────────────────────────────
             logger.info("Filling password...")
-            pwd_filled = await self._fill_password(page, password)
+            pwd_filled = await self._fill_password_human(page, password)
             if not pwd_filled:
-                await page.wait_for_timeout(2000)
-                pwd_filled = await self._fill_password(page, password)
-            if not pwd_filled:
-                body_text = (await page.inner_text("body")).lower()
-                logger.warning(f"Password input not found. URL={page.url}. Body snippet={body_text[:300]}")
                 return AuthResult(
                     success=False,
                     message="Could not find password input. Login flow may have changed.",
                 )
             await page.wait_for_timeout(600)
 
-            # Click Log in
-            await self._click_button_by_text(page, ["Log in", "Login"])
+            # ── Step 7: Submit login ──────────────────────────────────────────
+            logger.info("Submitting login form...")
+            await self._click_login_submit(page)
             await page.wait_for_timeout(4000)
 
-            # ── Step 7: Check if logged in ────────────────────────────────────
+            # ── Step 8: Check if logged in ────────────────────────────────────
             if await self._is_logged_in(page):
-                logger.info("Login successful!")
+                logger.info("Login successful! ✅")
                 return await self._capture_session(context)
 
-            # ── Step 8: Handle 2FA if needed ──────────────────────────────────
+            # ── Step 9: Handle 2FA ────────────────────────────────────────────
             body_text = (await page.inner_text("body")).lower()
             needs_2fa = any(k in body_text for k in [
                 "verification code", "two-factor", "2fa",
@@ -176,7 +178,10 @@ class AuthService:
                     return AuthResult(
                         success=False,
                         requires_2fa=True,
-                        message="Two-factor authentication required. Please provide your verification code.",
+                        message=(
+                            "Two-factor authentication required. "
+                            "Please provide your verification code."
+                        ),
                     )
                 code = two_factor_code or backup_code
                 logger.info("Filling 2FA code...")
@@ -186,10 +191,10 @@ class AuthService:
                 await page.wait_for_timeout(3500)
 
                 if await self._is_logged_in(page):
-                    logger.info("Login successful after 2FA!")
+                    logger.info("Login successful after 2FA! ✅")
                     return await self._capture_session(context)
 
-            # ── Step 9: Failed ────────────────────────────────────────────────
+            # ── Step 10: Failed ───────────────────────────────────────────────
             url = page.url
             snippet = (await page.inner_text("body"))[:200]
             logger.error(f"Login failed. URL={url}. Page snippet: {snippet}")
@@ -207,52 +212,14 @@ class AuthService:
             await browser.close()
             await playwright.stop()
 
-    # ── Helpers ───────────────────────────────────────────────────────────────
+    # ── Core login helpers ────────────────────────────────────────────────────
 
-    async def _click_sign_in_button(self, page) -> bool:
+    async def _fill_username_human(self, page, value: str) -> bool:
         """
-        Click the Sign in button on the X.com landing page.
-        Tries multiple strategies since the landing page has several CTAs.
+        Fill the username field using human-like character-by-character typing.
+        This is more reliable than .fill() because X's React form listens to
+        key events, not just input value changes.
         """
-        strategies = [
-            # data-testid used by X for the sign-in link
-            'a[data-testid="loginButton"]',
-            'a[href="/login"]',
-            '[data-testid="login"]',
-        ]
-        for sel in strategies:
-            try:
-                el = page.locator(sel).first
-                if await el.is_visible():
-                    await el.click()
-                    logger.info(f"Clicked sign in via selector: {sel}")
-                    return True
-            except Exception:
-                continue
-
-        # Text-based fallback — find any link/button that says "Sign in"
-        for text in ["Sign in", "Log in", "Sign In"]:
-            try:
-                el = page.get_by_role("link", name=text).first
-                if await el.is_visible():
-                    await el.click()
-                    logger.info(f"Clicked sign in via text: {text}")
-                    return True
-            except Exception:
-                pass
-            try:
-                el = page.get_by_role("button", name=text).first
-                if await el.is_visible():
-                    await el.click()
-                    logger.info(f"Clicked sign in button via text: {text}")
-                    return True
-            except Exception:
-                pass
-
-        return False
-
-    async def _fill_username(self, page, value: str) -> bool:
-        """Fill the username/email field."""
         selectors = [
             'input[autocomplete="username"]',
             'input[autocomplete="email"]',
@@ -266,17 +233,26 @@ class AuthService:
                 count = await loc.count()
                 for i in range(count):
                     el = loc.nth(i)
-                    if await el.is_visible():
-                        await el.fill(value)
-                        logger.info(f"Filled username with selector: {sel}")
+                    if await el.is_visible(timeout=1000):
+                        await el.click()
+                        await asyncio.sleep(0.3)
+                        # Clear any pre-filled content
+                        await page.keyboard.press("Control+a")
+                        await asyncio.sleep(0.1)
+                        # Type character by character
+                        for ch in value:
+                            await page.keyboard.type(ch)
+                            await asyncio.sleep(random.uniform(0.05, 0.15))
+                        logger.info(f"Typed username via selector: {sel}")
                         return True
             except Exception:
                 continue
 
-        return await self._fill_first_visible_text_input(page, value)
+        # Fallback: first visible text input
+        return await self._type_into_first_visible_text_input(page, value)
 
-    async def _fill_password(self, page, value: str) -> bool:
-        """Fill the password field."""
+    async def _fill_password_human(self, page, value: str) -> bool:
+        """Fill the password field with human-like typing."""
         selectors = [
             'input[type="password"]',
             'input[autocomplete="current-password"]',
@@ -290,38 +266,160 @@ class AuthService:
                 count = await loc.count()
                 for i in range(count):
                     el = loc.nth(i)
-                    if await el.is_visible():
-                        await el.fill(value)
-                        logger.info(f"Filled password with selector: {sel}")
+                    if await el.is_visible(timeout=1000):
+                        await el.click()
+                        await asyncio.sleep(0.3)
+                        for ch in value:
+                            await page.keyboard.type(ch)
+                            await asyncio.sleep(random.uniform(0.05, 0.13))
+                        logger.info(f"Typed password via selector: {sel}")
                         return True
             except Exception:
                 continue
 
-        for text in ["Password"]:
-            try:
-                el = page.get_by_label(text).first
-                if await el.is_visible():
-                    await el.fill(value)
-                    logger.info(f"Filled password via label: {text}")
-                    return True
-            except Exception:
-                pass
-
+        # Aria-label fallback
         try:
-            loc = page.locator('input:not([type="hidden"]):not([type="text"])')
-            count = await loc.count()
-            for i in range(count):
-                el = loc.nth(i)
-                if await el.is_visible():
-                    placeholder = await el.get_attribute("placeholder")
-                    aria_label = await el.get_attribute("aria-label")
-                    if (placeholder and "password" in placeholder.lower()) or (aria_label and "password" in aria_label.lower()):
-                        await el.fill(value)
-                        logger.info("Filled password via placeholder/aria-label fallback")
-                        return True
+            el = page.get_by_label("Password").first
+            if await el.is_visible(timeout=1000):
+                await el.click()
+                await asyncio.sleep(0.3)
+                for ch in value:
+                    await page.keyboard.type(ch)
+                    await asyncio.sleep(random.uniform(0.05, 0.13))
+                logger.info("Typed password via aria-label fallback")
+                return True
         except Exception:
             pass
+
         return False
+
+    async def _advance_login_step(self, page):
+        """
+        Advance past the current login step (username → password, etc.).
+
+        Priority order:
+          1. data-testid="ocfEnterTextNextButton"  ← most reliable for username step
+          2. Scan all visible buttons for text "Next" / "Continue"
+          3. Press Enter on the focused username input
+          4. Global keyboard Enter as absolute last resort
+        """
+
+        # Strategy 1 — known data-testid selectors for the Next button
+        next_testid_selectors = [
+            '[data-testid="ocfEnterTextNextButton"]',
+            '[data-testid="LoginForm_Login_Button"]',
+            '[data-testid="ocfLoginNextLink"]',
+        ]
+        for sel in next_testid_selectors:
+            try:
+                btn = page.locator(sel).first
+                if await btn.is_visible(timeout=2000):
+                    await btn.scroll_into_view_if_needed()
+                    await btn.click()
+                    logger.info(f"Clicked Next via data-testid: {sel}")
+                    await page.wait_for_timeout(2500)
+                    return
+            except Exception:
+                continue
+
+        # Strategy 2 — scan every <button> for text "Next" / "Continue"
+        try:
+            buttons = page.locator("button")
+            count = await buttons.count()
+            for i in range(count):
+                btn = buttons.nth(i)
+                try:
+                    if not await btn.is_visible(timeout=500):
+                        continue
+                    label = (await btn.inner_text()).strip().lower()
+                    if label in ("next", "continue", "next »"):
+                        await btn.scroll_into_view_if_needed()
+                        await btn.click()
+                        logger.info(f"Clicked button with text: '{label}'")
+                        await page.wait_for_timeout(2500)
+                        return
+                except Exception:
+                    continue
+        except Exception:
+            pass
+
+        # Strategy 3 — locate the username input and press Enter on it directly
+        input_selectors = [
+            'input[autocomplete="username"]',
+            'input[autocomplete="email"]',
+            'input[name="text"]',
+            'input[data-testid="ocfEnterTextTextInput"]',
+        ]
+        for sel in input_selectors:
+            try:
+                inp = page.locator(sel).first
+                if await inp.is_visible(timeout=1000):
+                    await inp.focus()
+                    await asyncio.sleep(0.3)
+                    await inp.press("Enter")
+                    logger.info(f"Pressed Enter on input: {sel}")
+                    await page.wait_for_timeout(2500)
+                    return
+            except Exception:
+                continue
+
+        # Strategy 4 — absolute last resort
+        logger.warning("All _advance_login_step strategies exhausted — pressing global Enter")
+        await page.keyboard.press("Enter")
+        await page.wait_for_timeout(2500)
+
+    async def _click_login_submit(self, page):
+        """Click the final 'Log in' submit button on the password step."""
+        submit_selectors = [
+            '[data-testid="LoginForm_Login_Button"]',
+            'button[type="submit"]',
+        ]
+        for sel in submit_selectors:
+            try:
+                btn = page.locator(sel).first
+                if await btn.is_visible(timeout=2000):
+                    await btn.scroll_into_view_if_needed()
+                    await btn.click()
+                    logger.info(f"Clicked login submit via: {sel}")
+                    return
+            except Exception:
+                continue
+
+        # Text-based fallbacks
+        for text in ["Log in", "Login", "Sign in"]:
+            for role in ["button", "link"]:
+                try:
+                    el = page.get_by_role(role, name=text).first
+                    if await el.is_visible(timeout=1000):
+                        await el.click()
+                        logger.info(f"Clicked '{text}' ({role})")
+                        return
+                except Exception:
+                    continue
+
+        # Scan all buttons
+        try:
+            buttons = page.locator("button")
+            count = await buttons.count()
+            for i in range(count):
+                btn = buttons.nth(i)
+                try:
+                    if not await btn.is_visible(timeout=500):
+                        continue
+                    label = (await btn.inner_text()).strip().lower()
+                    if label in ("log in", "login", "sign in"):
+                        await btn.click()
+                        logger.info(f"Clicked login button: '{label}'")
+                        return
+                except Exception:
+                    continue
+        except Exception:
+            pass
+
+        logger.warning("No submit button found — pressing Enter")
+        await page.keyboard.press("Enter")
+
+    # ── Generic helpers ───────────────────────────────────────────────────────
 
     async def _fill_first_visible_text_input(self, page, value: str) -> bool:
         """Generic fallback: fill the first visible non-password input."""
@@ -330,84 +428,30 @@ class AuthService:
             count = await loc.count()
             for i in range(count):
                 el = loc.nth(i)
-                if await el.is_visible():
+                if await el.is_visible(timeout=500):
                     await el.fill(value)
                     return True
         except Exception:
             pass
         return False
 
-    async def _advance_login_step(self, page):
-        """Submit the current login step using keyboard and button fallbacks."""
-        try:
-            focused = page.locator('input[autocomplete="username"], input[autocomplete="email"], input[name="text"], input[data-testid="ocfEnterTextTextInput"], input[dir="auto"]').first
-            if await focused.is_visible():
-                await focused.focus()
-                await focused.press("Enter")
-                await page.wait_for_timeout(1000)
-        except Exception:
-            pass
-
-        for selector in [
-            'button[data-testid="ocfEnterTextNextButton"]',
-            'button[type="submit"]:has-text("Next")',
-            'button:has-text("Next")',
-        ]:
-            try:
-                button = page.locator(selector).first
-                if await button.is_visible():
-                    await button.click()
-                    logger.info(f"Clicked login step button via selector: {selector}")
-                    await page.wait_for_timeout(1000)
-                    return
-            except Exception:
-                continue
-
-        await page.keyboard.press("Enter")
-        await page.wait_for_timeout(1000)
-
-    async def _human_type_first_visible_text_input(self, page, value: str) -> bool:
-        """Find the first visible text input and type into it with human-like delays."""
+    async def _type_into_first_visible_text_input(self, page, value: str) -> bool:
+        """Generic fallback: human-type into the first visible non-password input."""
         try:
             loc = page.locator('input:not([type="password"]):not([type="hidden"])')
             count = await loc.count()
             for i in range(count):
                 el = loc.nth(i)
-                if await el.is_visible():
+                if await el.is_visible(timeout=500):
                     await el.click()
-                    # Type like a human
+                    await asyncio.sleep(0.3)
                     for ch in value:
                         await page.keyboard.type(ch)
-                        await asyncio.sleep(random.uniform(0.03, 0.12))
-                    logger.info("Typed username with human-like delays")
+                        await asyncio.sleep(random.uniform(0.05, 0.15))
                     return True
         except Exception:
             pass
         return False
-
-    async def _click_button_by_text(self, page, texts: list[str]):
-        """Click the first visible button/link matching any of the given texts."""
-        for text in texts:
-            for role in ["button", "link"]:
-                try:
-                    el = page.get_by_role(role, name=text).first
-                    if await el.is_visible():
-                        await el.click()
-                        logger.info(f"Clicked '{text}' ({role})")
-                        return
-                except Exception:
-                    continue
-            # Fallback: locator with has-text
-            try:
-                el = page.locator(f'button:has-text("{text}")').first
-                if await el.is_visible():
-                    await el.click()
-                    logger.info(f"Clicked button with has-text: {text}")
-                    return
-            except Exception:
-                continue
-        # Last resort
-        await page.keyboard.press("Enter")
 
     async def _is_logged_in(self, page) -> bool:
         """Return True if the home feed is visible."""
